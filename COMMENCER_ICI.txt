@@ -1,0 +1,11 @@
+GREENMOVE — VERSION CODE + RESULTATS — MODE VS CODE
+
+1. Ouvrir VS Code → Fichier → Ouvrir un dossier → GreenMove_Demo_Code_et_Resultats
+2. Ouvrir GreenMove_CODE_ET_RESULTATS.ipynb
+3. Choisir le noyau Python 3.12 / .venv si disponible
+4. Si des paquets manquent, exécuter dans une cellule : %pip install ipykernel matplotlib
+5. Exécuter la 1re cellule d initialisation, puis une étape à la fois.
+6. Sous chaque cellule : vrai code du projet A GAUCHE ; résultat A DROITE.
+7. Ctrl+B dans VS Code pour agrandir la partie Notebook.
+
+Le code métier original se trouve dans les dossiers src/. Les graphiques servent à expliquer les décisions, pas à les simuler.
