@@ -26,7 +26,7 @@ CYAN = "\033[96m"
 MAGENTA = "\033[95m"
 
 # Etat du petit serveur HTTP utilise uniquement pour la demonstration.
-RECEIVED_IDS: set[str] = set()
+RECEIVED_IDS = set()
 LAST_HTTP_STATUS = "NON TESTE"
 
 
@@ -229,7 +229,8 @@ def demonstrate(folder):
     section(6, "📊 TELEMETRIE FINALE", MAGENTA)
     line("Version demo", "POC-resilience")
     line("Buffer RAM max", c(f"{recent_samples.maxlen} mesures", GREEN))
-    line("Alertes SQLite", c(str(database.pending_count()), GREEN))
+    line("Alertes SQLite en attente", c(str(database.pending_count()), GREEN))
+    line("Historique synchronise", c(str(database.synced_count()), GREEN))
     line("Collecte", c("ACTIVE / NON BLOQUEE", GREEN))
     line("Dernier test HTTP", c("OK", GREEN))
     line("Idempotence serveur", c("OK - 1 stockage pour 2 envois", GREEN))
@@ -244,6 +245,7 @@ def demonstrate(folder):
     line("Idempotence", c("✅ DEMONTREE", GREEN))
     line("Purge uniquement apres succes", c("✅ OUI", GREEN))
     line("Alertes encore en attente", c(str(database.pending_count()), GREEN))
+    line("Alertes archivees synced=1", c(str(database.synced_count()), GREEN))
 
     print("\n" + c("-" * WIDTH, CYAN))
     print(c("✅ CONCLUSION", BOLD + GREEN))

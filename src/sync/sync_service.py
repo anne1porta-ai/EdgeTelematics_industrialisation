@@ -7,8 +7,8 @@ import threading
 import requests
 
 from src.storage.event_repository import (
-    delete_alert,
     get_pending_alerts,
+    mark_alert_synced,
     schedule_retry,
 )
 
@@ -16,18 +16,18 @@ API_URL = os.environ.get("GML_API_URL", "")
 API_TOKEN = os.environ.get("GML_API_TOKEN", "")
 STOP_EVENT = threading.Event()
 
-# Variables uniquement utilisees pour la demonstration de panne 4G.
+# Ces variables servent uniquement a la demonstration de panne 4G.
 DEMO_MODE = True
 NETWORK_AVAILABLE = False
 FIRST_FAILURE = threading.Event()
 
 
-def send_alert(alert_id, payload):
+def send_alert(alert_id: str, payload: str) -> None:
+    """Simuler la 4G ou envoyer la meme alerte a l'API."""
     if DEMO_MODE:
         if not NETWORK_AVAILABLE:
             raise requests.ConnectionError("4G coupee")
-        print("\n[ENVOI] Alerte envoyee au serveur simule")
-        print("[ACK]   Reception confirmee")
+        print(f"[RECU] Alerte {alert_id} recue par le serveur simule.")
         return
 
     with requests.post(
@@ -43,8 +43,8 @@ def send_alert(alert_id, payload):
             raise requests.HTTPError(f"HTTP {response.status_code}")
 
 
-def network_worker():
-    """Relire SQLite, reessayer apres panne, supprimer apres succes."""
+def network_worker() -> None:
+    """Relire SQLite, envoyer, historiser puis retirer de la file active."""
     while not STOP_EVENT.is_set():
         pending_alerts = get_pending_alerts()
         if not pending_alerts:
@@ -56,8 +56,12 @@ def network_worker():
                 send_alert(alert_id, payload)
             except requests.RequestException:
                 delay = schedule_retry(alert_id, attempts)
-                print(f"[RETRY] Envoi impossible -> nouvel essai dans {delay} s")
+                print(f"[ECHEC] Alerte {alert_id} conservee dans SQLite.")
+                print(f"[RETRY] Nouvelle tentative dans {delay} s.")
                 FIRST_FAILURE.set()
             else:
-                delete_alert(alert_id)
-                print("[SQLITE] Alerte supprimee apres confirmation")
+                mark_alert_synced(alert_id)
+                print(
+                    f"[SYNCHRONISEE] Alerte {alert_id} archivee avec synced=1 "
+                    "et retiree de la file."
+                )
