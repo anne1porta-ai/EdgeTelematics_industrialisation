@@ -1,40 +1,14 @@
-# Python virtual environment
 .venv/
-
-# Python cache files
 __pycache__/
-*.py[cod]
-
-# Test cache
+*.pyc
 .pytest_cache/
-
-# IDE settings
-.vscode/
-
-# Operating system files
-.DS_Store
-Thumbs.db
-
-# Generated output
-daily_score.json
-
-data/demo_accelerometer_1000.csv
-ota_state.json
-ota_status.json
-bloc3_demo_events.db
-greenmove_events.db
-
-# Resultats locaux de la demonstration
-resultats_demo/
-*.db-wal
-*.db-shm
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-.ruff_cache/
 .mypy_cache/
+.ruff_cache/
 dist/
 staging/
-production-demo/
-reports/
-greenmove.db
+resultats_demo/
+*.db
+*.sqlite
+*.sqlite3
+.env
+ota_private.pem

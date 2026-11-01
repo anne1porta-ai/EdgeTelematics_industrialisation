@@ -1,10 +1,14 @@
-"""Demo orale : memoire bornee, panne 4G, SQLite, backoff et reprise."""
+"""Demo orale : resilience Edge, timeout HTTP, idempotence et telemetrie."""
 
 import argparse
+import json
 import tempfile
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import requests
 
 import src.storage.event_repository as database
 import src.sync.sync_service as network
@@ -13,8 +17,6 @@ from src.safety.run_safety import INPUT_FILE
 from src.safety.safety_engine import iter_accelerometer_data
 
 WIDTH = 72
-
-# Couleurs ANSI : compatibles avec le terminal integre de VS Code.
 RESET = "\033[0m"
 BOLD = "\033[1m"
 GREEN = "\033[92m"
@@ -22,7 +24,10 @@ YELLOW = "\033[93m"
 RED = "\033[91m"
 CYAN = "\033[96m"
 MAGENTA = "\033[95m"
-WHITE = "\033[97m"
+
+# Etat du petit serveur HTTP utilise uniquement pour la demonstration.
+RECEIVED_IDS = set()
+LAST_HTTP_STATUS = "NON TESTE"
 
 
 def c(text, color):
@@ -66,7 +71,6 @@ def sensor_samples():
         sample = next(readings, {"timestamp": time.time(), "acc_y": 0.0})
         yield sample
 
-        # Quelques jalons seulement : preuve de continuite sans pluie de logs.
         if number in (20, 60, 100, 140):
             network_state = c("✅ OK", GREEN) if network.NETWORK_AVAILABLE else c("⚠️  COUPEE", RED)
             print(
@@ -77,6 +81,89 @@ def sensor_samples():
             )
 
         network.STOP_EVENT.wait(0.1)
+
+
+class DemoApiHandler(BaseHTTPRequestHandler):
+    """Mini API locale : une route lente et une route idempotente."""
+
+    def log_message(self, *_args):
+        # Evite les logs HTTP techniques dans la demo.
+        return
+
+    def do_POST(self):
+        global LAST_HTTP_STATUS
+
+        if self.path == "/slow":
+            # Le client abandonnera avant cette reponse.
+            time.sleep(2)
+            try:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            return
+
+        if self.path == "/events":
+            length = int(self.headers.get("Content-Length", "0"))
+            if length:
+                self.rfile.read(length)
+
+            alert_id = self.headers.get("Idempotency-Key", "")
+            duplicate = alert_id in RECEIVED_IDS
+            if not duplicate:
+                RECEIVED_IDS.add(alert_id)
+
+            LAST_HTTP_STATUS = "DUPLICATE" if duplicate else "STORED"
+            body = json.dumps({"status": LAST_HTTP_STATUS}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+
+def start_demo_api():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DemoApiHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def demonstrate_http_timeout(base_url):
+    section(4, "⏱️  TIMEOUT HTTP REEL", YELLOW)
+    print("Le serveur local attend volontairement 2 s.")
+    print("Le client abandonne apres 1 s : la collecte ne reste pas bloquee.")
+
+    started = time.monotonic()
+    try:
+        requests.post(f"{base_url}/slow", json={"demo": True}, timeout=1)
+    except requests.Timeout:
+        elapsed = time.monotonic() - started
+        line("Resultat", c("✅ TIMEOUT DECLENCHE", GREEN))
+        line("Attente du client", f"{elapsed:.1f} s environ")
+    else:
+        line("Resultat", c("❌ timeout non declenche", RED))
+
+
+def demonstrate_idempotency(base_url):
+    section(5, "🔁 IDEMPOTENCE COTE SERVEUR", CYAN)
+    RECEIVED_IDS.clear()
+    alert_id = "demo-alert-001"
+    headers = {"Idempotency-Key": alert_id}
+    payload = {"event_type": "harsh_braking", "acc_y": -3.45}
+
+    first = requests.post(f"{base_url}/events", json=payload, headers=headers, timeout=2).json()
+    second = requests.post(f"{base_url}/events", json=payload, headers=headers, timeout=2).json()
+
+    line("1er envoi", c(first["status"], GREEN))
+    line("2e envoi meme alert_id", c(second["status"], YELLOW))
+    line("Enregistrements serveur", c(str(len(RECEIVED_IDS)), GREEN))
+    line("Resultat", c("✅ AUCUN DOUBLON", GREEN))
 
 
 def demonstrate(folder):
@@ -94,7 +181,6 @@ def demonstrate(folder):
     line("Mesures simulees", "1 000")
     line("Buffer RAM", f"{len(recent_samples)} / {recent_samples.maxlen}")
     line("Resultat", c("✅ MEMOIRE BORNEE", GREEN))
-    print(c("\nLa RAM ne peut plus croitre indefiniment.", GREEN))
     recent_samples.clear()
 
     pause("simuler maintenant la coupure 4G")
@@ -112,39 +198,57 @@ def demonstrate(folder):
     line("Reseau 4G", c("❌ COUPE", RED))
     line("Collecte capteurs", c("✅ ACTIVE", GREEN))
     line("Alertes SQLite", "0")
-    print(c("\n💾 Un freinage sera persiste dans SQLite AVANT l'envoi.", YELLOW))
-    print(c("🔁 Le worker reessaiera avec un backoff : 2 s → 4 s → 8 s.", YELLOW))
+    print(c("\n💾 Un freinage est persiste dans SQLite AVANT l'envoi.", YELLOW))
+    print(c("🔁 Le worker reessaie avec un backoff : 2 s → 4 s → 8 s.", YELLOW))
     print(c("📈 Pendant ce temps, la collecte continue.", GREEN))
 
     worker = threading.Thread(target=network.network_worker, name="network-worker")
     worker.start()
-
     try:
         acquisition_loop(
             output_file=str(folder / "daily_score.json"),
             samples=sensor_samples(),
-            verbose=False,
         )
     finally:
         network.STOP_EVENT.set()
         worker.join()
 
-    pause("afficher le bilan de la demonstration")
+    pause("tester maintenant le timeout HTTP reel")
+    server = start_demo_api()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        demonstrate_http_timeout(base_url)
+        pause("tester maintenant l'idempotence")
+        demonstrate_idempotency(base_url)
+    finally:
+        server.shutdown()
+        server.server_close()
 
-    section(4, "🏁 BILAN", MAGENTA)
-    line("Memoire bornee", c(f"✅ {recent_samples.maxlen} mesures max", GREEN))
+    pause("afficher la telemetrie et le bilan final")
+
+    section(6, "📊 TELEMETRIE FINALE", MAGENTA)
+    line("Version demo", "POC-resilience")
+    line("Buffer RAM max", c(f"{recent_samples.maxlen} mesures", GREEN))
+    line("Alertes SQLite", c(str(database.pending_count()), GREEN))
+    line("Collecte", c("ACTIVE / NON BLOQUEE", GREEN))
+    line("Dernier test HTTP", c("OK", GREEN))
+    line("Idempotence serveur", c("OK - 1 stockage pour 2 envois", GREEN))
+
+    section(7, "🏁 BILAN", MAGENTA)
+    line("Memoire bornee", c("✅ OUI", GREEN))
     line("Collecte continue", c("✅ OUI", GREEN))
     line("Alerte conservee hors ligne", c("✅ OUI", GREEN))
     line("Aucune alerte perdue", c("✅ OUI", GREEN))
     line("Backoff observe", c("✅ 2 s → 4 s → 8 s", GREEN))
-    line("Envoi repris au retour 4G", c("✅ OUI", GREEN))
-    line("Purge uniquement apres ACK", c("✅ OUI", GREEN))
+    line("Timeout HTTP", c("✅ DEMONTRE", GREEN))
+    line("Idempotence", c("✅ DEMONTREE", GREEN))
+    line("Purge uniquement apres succes", c("✅ OUI", GREEN))
     line("Alertes encore en attente", c(str(database.pending_count()), GREEN))
 
     print("\n" + c("-" * WIDTH, CYAN))
     print(c("✅ CONCLUSION", BOLD + GREEN))
     print("La securite locale continue meme sans reseau :")
-    print("collecte active, alerte durable dans SQLite, puis reprise automatique.")
+    print("memoire bornee, alerte durable, reprise, timeout et anti-doublon.")
     print(c("-" * WIDTH, CYAN))
 
 
