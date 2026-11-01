@@ -2,107 +2,150 @@ name: Bloc 3 CI
 
 on:
   push:
-    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  PYTHON_VERSION: '3.11'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PYTHONPATH: '.'
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   quality:
-    name: Quality - Ruff and mypy
+    name: Qualite - Ruff et mypy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
         with:
-          python-version: "3.12"
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
-      - run: pip install ruff mypy
-      - run: ruff check .
-      - run: mypy src scripts run_demo.py run_bloc3_demo.py --ignore-missing-imports
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les outils CI
+        run: python -m pip install -r requirements-ci.txt
+      - name: Verifier le code
+        run: python -m ruff check --isolated --select E4,E7,E9,F,I .
+      - name: Verifier les types
+        run: python -m mypy --explicit-package-bases --check-untyped-defs src scripts run_demo.py run_bloc3_demo.py
 
   tests:
-    name: Tests - pytest
+    name: Tests - pytest et rapport JUnit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
         with:
-          python-version: "3.12"
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
-      - run: pip install pytest
-      - run: pytest -q --junitxml=report.xml
-      - name: Upload test report
-        uses: actions/upload-artifact@v4
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
-          name: pytest-report
-          path: report.xml
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les outils CI
+        run: python -m pip install -r requirements-ci.txt
+      - name: Executer les tests
+        run: python -m pytest -q --junitxml=reports/pytest.xml
+      - name: Conserver le rapport meme apres un echec
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: greenmove-pytest-report
+          path: reports/pytest.xml
+          if-no-files-found: warn
+          retention-days: 30
 
   security:
-    name: Security - Bandit, pip-audit, Gitleaks
+    name: Securite - Bandit, pip-audit et Gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
-      - run: python -m pip install --upgrade pip
-      - run: pip install bandit pip-audit
-      - run: bandit -r src scripts run_demo.py run_bloc3_demo.py
-      - run: pip-audit -r requirements.txt
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les outils CI
+        run: |
+          mkdir -p reports
+          python -m pip install -r requirements-ci.txt
+      - name: Analyser le code applicatif avec Bandit
+        if: ${{ !cancelled() }}
+        run: python -m bandit -r src scripts run_demo.py run_bloc3_demo.py -x tests,scripts/tests -f json -o reports/bandit.json
+      - name: Auditer les dependances du projet
+        if: ${{ !cancelled() }}
+        run: python -m pip_audit -r requirements.txt --format json --output reports/pip-audit.json
+      - name: Rechercher les secrets avec la CLI officielle Gitleaks
+        if: ${{ !cancelled() }}
+        # Image publique officielle : aucune licence ni cle Gitleaks necessaire.
+        run: docker run --rm --user "$(id -u):$(id -g)" --volume "$GITHUB_WORKSPACE:/repo" --workdir /repo ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact --report-format json --report-path reports/gitleaks.json .
+      - name: Conserver les rapports de securite
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: greenmove-security-reports
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 30
 
-  build_sign:
-    name: Build OTA - hash and signature
+  build:
+    name: Construire le paquet et son manifeste
     needs: [quality, tests, security]
     runs-on: ubuntu-latest
-    env:
-      VERSION: "1.2.${{ github.run_number }}"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
         with:
-          python-version: "3.12"
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Construire une seule fois
+        run: python -m scripts.build_package --version "demo-${GITHUB_RUN_NUMBER}" --commit "$GITHUB_SHA" --output-dir dist
+      - name: Conserver le paquet construit
+        uses: actions/upload-artifact@v7
+        with:
+          name: greenmove-build
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: Build immutable OTA package
-        run: python scripts/build_ota_package.py --version "$VERSION" --commit "${{ github.sha }}"
-
-      - name: Restore private signing key from GitHub Secret
-        env:
-          OTA_SIGNING_PRIVATE_KEY: ${{ secrets.OTA_SIGNING_PRIVATE_KEY }}
-        run: |
-          test -n "$OTA_SIGNING_PRIVATE_KEY" || (echo "Missing OTA_SIGNING_PRIVATE_KEY secret" && exit 1)
-          printf '%s\n' "$OTA_SIGNING_PRIVATE_KEY" > ota_private.pem
-          chmod 600 ota_private.pem
-
-      - name: Sign SHA-256 digest
-        run: |
-          PACKAGE="dist/edge-telematics-${VERSION}.zip"
-          openssl dgst -sha256 -sign ota_private.pem -out "${PACKAGE}.sig" "$PACKAGE"
-          sha256sum "$PACKAGE" > "${PACKAGE}.sha256"
-
-      - name: Verify signature before publishing artifact
-        run: |
-          PACKAGE="dist/edge-telematics-${VERSION}.zip"
-          openssl dgst -sha256 -verify keys/ota_public.pem -signature "${PACKAGE}.sig" "$PACKAGE"
-          sha256sum -c "${PACKAGE}.sha256"
-
-      - name: Remove private key
+  staging:
+    name: Staging simule - paquet, demonstration et rollback
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les dependances du projet
+        run: python -m pip install -r requirements.txt
+      - name: Recuperer le paquet construit
+        uses: actions/download-artifact@v8
+        with:
+          name: greenmove-build
+          path: dist/
+      - name: Verifier et exercer ce paquet en simulation
+        run: python -m scripts.staging_demo --manifest dist/manifest.json --output-dir staging
+      - name: Conserver le rapport de staging
         if: always()
-        run: rm -f ota_private.pem
-
-      - name: Upload signed OTA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: ota-signed-package
-          path: |
-            dist/edge-telematics-${{ env.VERSION }}.zip
-            dist/edge-telematics-${{ env.VERSION }}.zip.sha256
-            dist/edge-telematics-${{ env.VERSION }}.zip.sig
-            dist/manifest.json
+          name: greenmove-staging-report
+          path: staging/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Rendre le paquet valide disponible pour la promotion manuelle
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: greenmove-validated-package
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30

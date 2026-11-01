@@ -138,7 +138,7 @@ def test_background_network_does_not_block_business_persistence(tmp_path, monkey
     def run_network():
         try:
             network.network_worker()
-        except Exception as error:
+        except (AssertionError, OSError, RuntimeError, ValueError, requests.RequestException) as error:
             errors.append(error)
 
     def sample_stream():
@@ -155,7 +155,7 @@ def test_background_network_does_not_block_business_persistence(tmp_path, monkey
         try:
             acquisition_loop(output_file=str(report), samples=sample_stream())
             business_finished.set()
-        except Exception as error:
+        except (AssertionError, OSError, RuntimeError, ValueError, requests.RequestException) as error:
             errors.append(error)
 
     monkeypatch.setattr(network, "send_alert", blocked_sender)
@@ -311,16 +311,15 @@ def test_http_sends_stable_identity_and_leaves_old_table_untouched(monkeypatch):
 
     # The old table is preserved; this flow intentionally performs no migration.
     old_payload = json.dumps({"timestamp": 1, "acc_y": -3.45})
-    with closing(database.connect_database()) as connection:
-        with connection:
-            connection.execute(
-                "CREATE TABLE events (id INTEGER PRIMARY KEY, event_type TEXT, "
-                "payload TEXT, created_at TEXT, synced INTEGER)"
-            )
-            connection.execute(
-                "INSERT INTO events VALUES (1, 'harsh_braking', ?, 'original-date', 0)",
-                (old_payload,),
-            )
+    with closing(database.connect_database()) as connection, connection:
+        connection.execute(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, event_type TEXT, "
+            "payload TEXT, created_at TEXT, synced INTEGER)"
+        )
+        connection.execute(
+            "INSERT INTO events VALUES (1, 'harsh_braking', ?, 'original-date', 0)",
+            (old_payload,),
+        )
     database.initialize_database()
     assert database.get_pending_alerts() == []
     assert database.pending_count() == 0

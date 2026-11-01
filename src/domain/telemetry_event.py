@@ -22,7 +22,7 @@ class TelemetryEvent:
     def harsh_braking(
         cls,
         acc_y: float,
-        timestamp: int | float,
+        timestamp: float,
     ) -> "TelemetryEvent":
         """Create a telemetry event describing a harsh braking event."""
         return cls(
