@@ -1,93 +1,43 @@
-from src.domain.telemetry_event import (
-    TelemetryEvent,
-)
+import threading
 
-from src.storage.event_repository import (
-    EventRepository,
-)
+import requests
 
-from src.sync.sync_service import (
-    SyncService,
-)
+import src.storage.event_repository as database
+import src.sync.sync_service as network
 
 
-def test_network_failure_keeps_event(
-    tmp_path,
-):
-    repository = EventRepository(
-        tmp_path / "events.db"
-    )
+def test_network_failure_keeps_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "events.db"))
+    database.initialize_database()
+    database.save_alert({"acc_y": -3.45, "timestamp": 1})
+    monkeypatch.setattr(network, "STOP_EVENT", threading.Event())
+    monkeypatch.setattr(network, "FIRST_FAILURE", threading.Event())
 
-    repository.add(
-        TelemetryEvent.harsh_braking(
-            acc_y=-3.45,
-            timestamp=1,
-        )
-    )
+    def failing_sender(_alert_id, _payload):
+        network.STOP_EVENT.set()
+        raise requests.ConnectionError("offline")
 
-    def failing_sender(
-        _event,
-        _timeout,
-    ):
-        raise ConnectionError(
-            "offline"
-        )
+    monkeypatch.setattr(network, "send_alert", failing_sender)
+    network.network_worker()
 
-    result = SyncService(
-        repository,
-        failing_sender,
-        max_attempts=3,
-    ).sync_pending()
-
-    assert result == {
-        "synced": 0,
-        "failed": 1,
-    }
-
-    assert (
-        repository.pending_count()
-        == 1
-    )
+    assert database.pending_count() == 1
+    assert network.FIRST_FAILURE.is_set()
 
 
-def test_network_recovery_syncs_event(
-    tmp_path,
-):
-    repository = EventRepository(
-        tmp_path / "events.db"
-    )
-
-    repository.add(
-        TelemetryEvent.harsh_braking(
-            acc_y=-3.45,
-            timestamp=1,
-        )
-    )
-
+def test_network_recovery_syncs_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "events.db"))
+    database.initialize_database()
+    alert_id = database.save_alert({"acc_y": -3.45, "timestamp": 1})
+    monkeypatch.setattr(network, "STOP_EVENT", threading.Event())
+    monkeypatch.setattr(network, "FIRST_FAILURE", threading.Event())
     sent = []
 
-    def sender(
-        event,
-        timeout,
-    ):
-        sent.append(
-            (
-                event["id"],
-                timeout,
-            )
-        )
+    def sender(received_id, _payload):
+        sent.append(received_id)
+        network.STOP_EVENT.set()
 
-    result = SyncService(
-        repository,
-        sender,
-    ).sync_pending()
+    monkeypatch.setattr(network, "send_alert", sender)
+    network.network_worker()
 
-    assert result == {
-        "synced": 1,
-        "failed": 0,
-    }
-
-    assert (
-        repository.pending_count()
-        == 0
-    )
+    assert sent == [alert_id]
+    assert database.pending_count() == 0

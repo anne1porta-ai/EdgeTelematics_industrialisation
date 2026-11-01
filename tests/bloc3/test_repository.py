@@ -1,51 +1,18 @@
-from src.domain.telemetry_event import (
-    TelemetryEvent,
-)
-
-from src.storage.event_repository import (
-    EventRepository,
-)
+import src.storage.event_repository as database
 
 
-def test_event_is_persisted_locally(
-    tmp_path,
-):
-    repository = EventRepository(
-        tmp_path / "events.db"
-    )
+def test_event_is_persisted_locally(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "events.db"))
+    database.initialize_database()
+    database.save_alert({"acc_y": -3.45, "timestamp": 1})
 
-    repository.add(
-        TelemetryEvent.harsh_braking(
-            acc_y=-3.45,
-            timestamp=1,
-        )
-    )
-
-    assert (
-        repository.pending_count()
-        == 1
-    )
+    assert database.pending_count() == 1
 
 
-def test_mark_synced(
-    tmp_path,
-):
-    repository = EventRepository(
-        tmp_path / "events.db"
-    )
+def test_delete_alert(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "events.db"))
+    database.initialize_database()
+    alert_id = database.save_alert({"acc_y": -3.45, "timestamp": 1})
+    database.delete_alert(alert_id)
 
-    event_id = repository.add(
-        TelemetryEvent.harsh_braking(
-            acc_y=-3.45,
-            timestamp=1,
-        )
-    )
-
-    repository.mark_synced(
-        [event_id]
-    )
-
-    assert (
-        repository.pending_count()
-        == 0
-    )
+    assert database.pending_count() == 0

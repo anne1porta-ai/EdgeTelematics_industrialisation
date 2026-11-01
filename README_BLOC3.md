@@ -1,3 +1,5 @@
+> **Lecture courte :** [MODIFICATIONS.md](MODIFICATIONS.md) explique comment lancer le projet et suivre les fonctions reprises du PowerPoint. Les sections 3 à 6 ci-dessous décrivent le code et la démonstration actuels.
+
 # Bloc 3 — Industrialisation GreenMove Edge
 
 Cette branche conserve les réalisations du Bloc 2 et ajoute les mécanismes nécessaires à l’industrialisation du POC GreenMove Edge.
@@ -46,49 +48,55 @@ Les modules `geo` et `safety` du Bloc 2 sont conservés.
 
 ## 3. Persistance locale
 
-`EventRepository` remplace le buffer mémoire non borné du POC initial.
+Les fonctions de `src/storage/event_repository.py` reprennent le principe montré dans le PowerPoint : **enregistrer l’alerte avant toute tentative d’envoi**.
 
-Les événements sont écrits dans SQLite avec un statut `synced`.
+`initialize_database()` prépare la table SQLite `pending_alerts`. Elle contient l’identifiant `alert_id`, le contenu `payload`, la date `created_at`, le nombre d’essais `attempts` et l’échéance `next_attempt_at`.
 
-Tant qu’un événement n’a pas été transmis avec succès, il reste disponible localement et pourra être rejoué lors du retour du réseau.
+| Fonction | Rôle |
+|---|---|
+| `save_alert(sample)` | Créer l’identifiant de l’alerte, ajouter sa date de capture et valider son écriture en SQLite. |
+| `get_pending_alerts()` | Relire un lot d’alertes dont l’échéance de reprise est atteinte. |
+| `pending_count()` | Compter toutes les alertes conservées, y compris celles qui attendent leur prochain essai. |
+| `delete_alert(alert_id)` | Supprimer l’alerte après un envoi réussi. |
 
-## 4. Synchronisation différée
+L’identifiant et le contenu sont relus depuis SQLite lors d’un nouvel essai : l’alerte n’est pas recréée à chaque tentative.
 
-`SyncService` découple le transport réseau du traitement métier.
+Le JSON contient aussi un type explicite repris du modèle d’origine : `event_type="harsh_braking"` pour un freinage, ou `event_type="zfe_entry"` pour une entrée en ZFE. Ce champ accompagne l’alerte dans SQLite et lors de l’envoi.
 
-Le service :
+## 4. Collecte et envoi dans deux parcours distincts
 
-- récupère les événements non synchronisés ;
-- limite le nombre d’événements traités par lot ;
-- applique un timeout transmis au transport ;
-- effectue plusieurs tentatives ;
-- intercepte les erreurs réseau attendues ;
-- marque un événement comme synchronisé uniquement après succès.
+Dans le **thread principal**, `acquisition_loop()` appelle le moteur Safety existant avec `on_event=save_alert`. Safety lit les mesures, détecte le freinage et appelle directement la fonction de stockage. Il ne fait aucun appel HTTP dans cette collecte. Dans la démonstration, le paramètre `samples` transmet à Safety le flux cadencé de `sensor_samples()` ; la détection n’est pas réimplémentée dans le scénario.
 
-Une coupure 4G ne provoque donc plus la perte de la donnée.
+Un seul **thread réseau** exécute `network_worker()`. Son déroulement est simple :
+
+1. Relire les alertes disponibles avec `get_pending_alerts()`.
+2. Tenter l’envoi avec `send_alert()`.
+3. En cas d’échec réseau, appeler `schedule_retry(alert_id, attempts)` et conserver l’alerte.
+4. En cas de succès, appeler `delete_alert(alert_id)`.
+
+`schedule_retry()` enregistre en SQLite le compteur d’essais et la prochaine échéance. Les délais augmentent : **2, 4, 8 secondes… jusqu’à 300 secondes**. Ils restent enregistrés si le programme est arrêté puis relancé. L’attente réseau reste séparée du traitement Safety.
+
+Ce mécanisme est une reprise avec délai croissant (*backoff*). **Il ne comporte pas de circuit breaker.** Hors simulation, `send_alert()` utilise l’appel HTTP avec `timeout=(3, 10)` ; une réponse HTTP 2xx est considérée comme un succès d’envoi.
 
 ## 5. Démonstration réseau
 
-Commande :
+Depuis la racine du projet :
 
 ```bash
-python run_bloc3_demo.py
+python run_bloc3_demo.py --data-dir resultats_demo
 ```
 
-Résultat attendu :
+**SQLite est réel ; le réseau est simulé.** Le scénario est automatique et dure environ dix secondes. Il utilise le moteur Safety existant, avec une collecte dans le thread principal et un seul thread réseau.
 
-```text
-[LOCAL] pending before sync=1
-[OFFLINE] synced=0 failed=1 pending=1
-[SYNC] sent id=1 type=harsh_braking timeout=2.0s
-[ONLINE] synced=1 failed=0 pending=0
-```
+1. `sensor_samples()` fournit **100 mesures à une cadence d’environ 100 ms**. Les dix premières viennent du CSV original et contiennent un seul freinage. Les suivantes sont normales (`acc_y=0`) pour continuer la collecte sans recréer de freinage.
+2. Alors que la 4G simulée est coupée, Safety détecte le freinage et appelle `save_alert()`. Les envois échouent mais l’alerte reste dans SQLite. Toutes les dix mesures, `[COLLECTE]` affiche le compteur, l’état de la 4G et `pending_count()` : on voit que les mesures continuent pendant la panne.
+3. À la **mesure 61, vers six secondes**, `sensor_samples()` rétablit automatiquement la 4G simulée. Le worker reprend l’envoi du même identifiant. Après le succès simulé, `delete_alert()` retire l’alerte ; la collecte continue jusqu’à la centième mesure.
 
-La première tentative simule une coupure réseau.
+**Bilan attendu : 100 mesures traitées, 1 freinage détecté et 0 alerte en attente.**
 
-L’événement reste localement en attente.
+Les délais de reprise sont plafonnés à **2 secondes dans cette démonstration** pour garder une reprise rapide pendant la présentation. Aucune API externe n’est appelée : le succès de réception est simulé.
 
-La seconde tentative simule le retour du réseau et permet sa synchronisation.
+Chaque essai crée un sous-dossier distinct dans `resultats_demo`, avec sa base `events.sqlite` et son rapport `daily_score.json`. Les anciens résultats ne sont pas effacés. Le bloc `finally` demande l’arrêt du worker puis attend sa fin.
 
 ## 6. Tests automatisés
 
@@ -98,120 +106,63 @@ Tests Bloc 3 :
 python -m pytest -q tests/bloc3
 ```
 
-Résultat attendu :
-
-```text
-7 passed
-```
-
 Suite complète du projet :
 
 ```bash
 python -m pytest -q
 ```
 
-État validé avant la vidéo :
+Le résultat courant et le nombre exact de tests exécutés figurent dans [VALIDATION.txt](VALIDATION.txt).
 
-```text
-27 passed
-```
+## 7. Intégration et livraison continues
 
-Les tests couvrent notamment :
+Le guide [CI_CD_DEMO.md](CI_CD_DEMO.md) détaille les sources et les étapes de présentation.
 
-- persistance locale ;
-- marquage des événements synchronisés ;
-- conservation des événements en cas de panne réseau ;
-- reprise après retour du réseau ;
-- validation du manifest OTA ;
-- mise à jour réussie ;
-- rollback après échec d’installation.
+Le workflow `.github/workflows/bloc3-ci.yml` se déclenche sur un push, une Pull Request ou un lancement manuel. Il réalise :
 
-## 7. Intégration continue
+1. les contrôles Ruff et mypy ;
+2. les tests pytest, avec un rapport JUnit ;
+3. les analyses Bandit, pip-audit et Gitleaks ;
+4. la construction du ZIP et du manifeste, si les trois contrôles précédents réussissent ;
+5. le staging simulé à partir du paquet construit.
 
-Le workflow GitHub Actions se trouve dans :
+`scripts/build_package.py` fabrique `dist/greenmove.zip` à partir des sources et des données. `dist/manifest.json` contient sa version, son commit et son SHA-256. L'artifact `greenmove-validated-package` devient disponible uniquement après le succès du staging.
 
-`.github/workflows/bloc3-ci.yml`
+Le second workflow, `.github/workflows/promote-demo.yml`, se lance manuellement avec l'identifiant `source_run_id` d'une CI réussie. Il récupère son paquet validé et simule sa promotion sans le reconstruire. Ce lancement représente le Go humain du POC.
 
-Il est déclenché sur :
+## 8. Vérification du paquet construit
 
-- push sur `bloc3-industrialisation` ;
-- Pull Request.
-
-Le workflow réalise automatiquement :
-
-1. checkout du dépôt ;
-2. installation de Python ;
-3. installation des dépendances ;
-4. exécution de la suite de tests ;
-5. validation du manifest OTA.
-
-Si les tests échouent, les étapes suivantes ne sont pas validées.
-
-Le workflow constitue aujourd’hui la partie CI de la chaîne.
-
-La chaîne cible complète de production est :
-
-`Commit → Pull Request → Tests → Build → Staging → Release progressive`
-
-## 8. Validation OTA
-
-Commande :
+Depuis la racine du projet :
 
 ```bash
-python -m src.ota.check_manifest
+python -m scripts.build_package --version demo-local
+python -m src.ota.check_manifest --manifest dist/manifest.json
 ```
 
-Résultat attendu :
+Le SHA-256 est calculé sur le ZIP réellement produit. Si les octets du paquet ne correspondent plus au manifeste, la vérification échoue et la simulation OTA ne modifie pas l'état installé.
 
-```text
-[OTA] manifest version=2.3.0 signature=valid checksum=valid
-```
+Ce contrôle d'intégrité n'est pas une signature cryptographique. L'ancien `src/ota/manifest.json`, son paquet de démonstration et sa `demo_signature` restent disponibles pour les tests historiques avec `python -m src.ota.check_manifest` sans argument. La nouvelle chaîne utilise le manifeste de `dist/`.
 
-Le checksum SHA-256 vérifie réellement l’intégrité du package.
+## 9. Staging, installation et rollback simulés
 
-La `demo_signature` est volontairement pédagogique.
-
-Elle ne constitue pas une signature cryptographique de production.
-
-Dans une architecture industrielle, elle serait remplacée par une signature asymétrique avec :
-
-- clé privée protégée côté backend ;
-- clé publique embarquée sur les tablettes.
-
-## 9. Mise à jour et rollback
-
-Simulation d’une mise à jour réussie :
+Pour montrer le scénario complet après le build :
 
 ```bash
-python -m src.ota.simulate_update --version 2.3.0
+python -m scripts.staging_demo --manifest dist/manifest.json --output-dir staging
 ```
 
-Simulation d’un échec d’installation :
+Le script vérifie et extrait le paquet, puis exécute **le code extrait**. Il attend 100 mesures traitées, un freinage et aucune alerte restante après la reprise réseau. Il simule ensuite un échec d'installation : la version précédente est conservée. Enfin, il simule une installation réussie du même paquet.
+
+Le rapport se trouve dans `staging/report.json` et le journal de collecte dans `staging/demo.log`. Sous Windows, `LANCER_LIVRAISON.bat` enchaîne le build et ce scénario.
+
+Pour montrer séparément une installation puis un échec :
 
 ```bash
-python -m src.ota.simulate_update --version 2.4.0 --fail-install
+python -m src.ota.simulate_update --manifest dist/manifest.json --state-dir production-demo
+python -m src.ota.simulate_update --manifest dist/manifest.json --state-dir production-demo --fail-install
 ```
 
-Lecture du statut :
-
-```bash
-cat ota_status.json
-```
-
-Résultat attendu après échec :
-
-```json
-{
-  "status": "rolled_back",
-  "attempted_version": "2.4.0",
-  "current_version": "2.3.0",
-  "previous_version": "2.3.0"
-}
-```
-
-Cette simulation illustre le principe de retour à la dernière version saine.
-
-Elle ne constitue pas encore un updater Android de production ni une installation atomique au niveau du système d’exploitation.
+La seconde commande retourne volontairement le code 1. `production-demo/ota_status.json` indique `rolled_back` et conserve la version précédemment installée. L'installation et le rollback modifient des fichiers JSON locaux : ils illustrent les concepts OTA, sans installer un système sur une tablette.
 
 ## 10. Déploiement progressif cible
 
@@ -263,14 +214,12 @@ Chaque incident significatif doit produire une amélioration durable :
 ## 13. Commandes de démonstration vidéo
 
 ```bash
-git branch --show-current
-python -m pytest -q tests/bloc3
-python run_bloc3_demo.py
-python -m src.ota.check_manifest
-python -m src.ota.simulate_update --version 2.3.0
-python -m src.ota.simulate_update --version 2.4.0 --fail-install
-cat ota_status.json
+python -m pytest -q
+python -m scripts.build_package --version demo-local
+python -m scripts.staging_demo --manifest dist/manifest.json --output-dir staging
 ```
+
+Le staging inclut déjà la démonstration de collecte et de reprise réseau. Sur GitHub, terminer par le lancement manuel de **Promotion manuelle - demonstration** avec l'identifiant de la CI réussie.
 
 ## 14. Limites du POC Bloc 3
 

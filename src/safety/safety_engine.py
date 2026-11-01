@@ -1,9 +1,10 @@
-import json
 import csv
+import json
+from collections.abc import Callable
 from pathlib import Path
 
-
 HARSH_BRAKING_THRESHOLD = -2.5
+HARSH_BRAKING_RESET_THRESHOLD = -2.3
 
 
 def parse_timestamp(value: str) -> int | float:
@@ -14,7 +15,8 @@ def parse_timestamp(value: str) -> int | float:
         return int(timestamp)
 
     return timestamp
-    
+
+
 def iter_accelerometer_data(file_path: str):
     """Yield accelerometer samples one by one from a CSV file."""
     path = Path(file_path)
@@ -33,27 +35,47 @@ def iter_accelerometer_data(file_path: str):
                 "acc_z": float(row["acc_z"]),
             }
 
-def analyze_accelerometer_stream(samples) -> dict:
-    """Process accelerometer samples without keeping the full dataset in memory."""
+
+def analyze_accelerometer_stream(
+    samples,
+    *,
+    on_event: Callable[[dict], None] | None = None,
+    retain_events: bool = True,
+) -> dict:
+    """Count all samples and emit one event per harsh braking episode.
+
+    Detection rearms only above the reset threshold. Events are delivered
+    immediately and counted even when they are not retained in the result.
+    """
     total_samples = 0
+    harsh_braking_events = 0
     events = []
+    armed = True
 
     for sample in samples:
         total_samples += 1
 
-        if is_harsh_braking(sample["acc_y"]):
-            events.append(
-                {
-                    "timestamp": sample["timestamp"],
-                    "acc_y": sample["acc_y"],
-                }
-            )
+        acc_y = sample["acc_y"]
+        if acc_y > HARSH_BRAKING_RESET_THRESHOLD:
+            armed = True
+        elif armed and is_harsh_braking(acc_y):
+            armed = False
+            event = {
+                "timestamp": sample["timestamp"],
+                "acc_y": acc_y,
+            }
+            if on_event is not None:
+                on_event(dict(event))
+            if retain_events:
+                events.append(event)
+            harsh_braking_events += 1
 
     return {
         "total_samples": total_samples,
-        "harsh_braking_events": len(events),
+        "harsh_braking_events": harsh_braking_events,
         "events": events,
     }
+
 
 def is_harsh_braking(acc_y: float) -> bool:
     """Return True when longitudinal deceleration exceeds the threshold."""
@@ -61,14 +83,20 @@ def is_harsh_braking(acc_y: float) -> bool:
 
 
 def detect_harsh_braking_events(samples: list[dict]) -> list[dict]:
-    """Return samples identified as harsh braking events."""
+    """Return the complete first sample of each harsh braking episode."""
     events = []
+    armed = True
 
     for sample in samples:
-        if is_harsh_braking(sample["acc_y"]):
+        acc_y = sample["acc_y"]
+        if acc_y > HARSH_BRAKING_RESET_THRESHOLD:
+            armed = True
+        elif armed and is_harsh_braking(acc_y):
+            armed = False
             events.append(sample)
 
     return events
+
 
 def build_daily_score(samples: list[dict], events: list[dict]) -> dict:
     """Build a daily safety summary from accelerometer samples."""

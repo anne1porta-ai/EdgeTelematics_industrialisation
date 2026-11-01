@@ -1,79 +1,63 @@
-"""Deferred synchronization service for locally persisted telemetry events.
+"""Envoi des alertes SQLite : les fonctions et le try/except/else des PPT."""
 
-Network transmission is injected through a sender callable. This keeps network
-I/O outside the business model and makes the retry behavior easy to test.
-"""
+import json
+import os
+import threading
 
-from collections.abc import Callable
-from typing import Any
+import requests
 
-from src.storage.event_repository import EventRepository
+from src.storage.event_repository import (
+    delete_alert,
+    get_pending_alerts,
+    schedule_retry,
+)
+
+API_URL = os.environ.get("GML_API_URL", "")
+API_TOKEN = os.environ.get("GML_API_TOKEN", "")
+STOP_EVENT = threading.Event()
+
+# Ces variables servent uniquement a la demonstration de panne 4G.
+DEMO_MODE = True
+NETWORK_AVAILABLE = False
+FIRST_FAILURE = threading.Event()
 
 
-Sender = Callable[
-    [dict[str, Any], float],
-    None,
-]
+def send_alert(alert_id, payload):
+    """Simuler la 4G ou envoyer la meme alerte a l'API."""
+    if DEMO_MODE:
+        if not NETWORK_AVAILABLE:
+            raise requests.ConnectionError("4G coupee")
+        print(f"[RECU] Alerte {alert_id} recue par le serveur simule.")
+        return
+
+    with requests.post(
+        API_URL,
+        json=json.loads(payload),
+        headers={
+            "Authorization": f"Bearer {API_TOKEN}",
+            "Idempotency-Key": alert_id,
+        },
+        timeout=(3, 10),
+    ) as response:
+        if not 200 <= response.status_code < 300:
+            raise requests.HTTPError(f"HTTP {response.status_code}")
 
 
-class SyncService:
-    """Synchronize pending events without losing them on network failure."""
+def network_worker():
+    """Relire SQLite, envoyer, puis supprimer uniquement apres succes."""
+    while not STOP_EVENT.is_set():
+        pending_alerts = get_pending_alerts()
+        if not pending_alerts:
+            STOP_EVENT.wait(0.2)
+            continue
 
-    def __init__(
-        self,
-        repository: EventRepository,
-        sender: Sender,
-        timeout_seconds: float = 2.0,
-        max_attempts: int = 3,
-    ) -> None:
-        self.repository = repository
-        self.sender = sender
-        self.timeout_seconds = timeout_seconds
-        self.max_attempts = max_attempts
-
-    def sync_pending(
-        self,
-        limit: int = 100,
-    ) -> dict[str, int]:
-        """Try to send a bounded batch of pending events.
-
-        An event is marked as synchronized only after a successful send.
-        Temporary transport failures leave the event pending for a later retry.
-        """
-        synced_ids: list[int] = []
-        failed = 0
-
-        for event in self.repository.pending(limit):
-            delivered = False
-
-            for _ in range(self.max_attempts):
-                try:
-                    self.sender(
-                        event,
-                        self.timeout_seconds,
-                    )
-                    delivered = True
-                    break
-
-                except (
-                    ConnectionError,
-                    TimeoutError,
-                    OSError,
-                ):
-                    # Transport errors are expected during connectivity loss.
-                    # The event remains pending instead of being discarded.
-                    continue
-
-            if delivered:
-                synced_ids.append(event["id"])
+        for alert_id, payload, attempts in pending_alerts:
+            try:
+                send_alert(alert_id, payload)
+            except requests.RequestException:
+                schedule_retry(alert_id, attempts)
+                print(f"[ECHEC] Alerte {alert_id} conservee ; nouvel essai programme.")
+                FIRST_FAILURE.set()
             else:
-                failed += 1
-
-        self.repository.mark_synced(
-            synced_ids
-        )
-
-        return {
-            "synced": len(synced_ids),
-            "failed": failed,
-        }
+                delete_alert(alert_id)
+                print(f"[SUPPRIMEE] Alerte {alert_id} retiree de SQLite apres succes.")

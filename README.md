@@ -1,3 +1,7 @@
+> **Adaptation actuelle :** lire [MODIFICATIONS.md](MODIFICATIONS.md) pour lancer le projet et comprendre les adaptations.
+> **Chaîne CI/CD :** lire [CI_CD_DEMO.md](CI_CD_DEMO.md) pour le build, le staging et la promotion manuelle du même paquet.
+> Le texte ci-dessous est conservé comme documentation de la version d’origine ; ses anciennes sorties et anciens nombres de tests ne décrivent pas cette adaptation.
+
 # GreenMove Edge POC
 
 Proof of concept for GreenMove Logistics demonstrating offline ZFE geofencing and telematics-based harsh braking detection on constrained edge hardware.

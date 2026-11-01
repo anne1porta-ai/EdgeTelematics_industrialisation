@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 OUTPUT_FILE = Path("data/demo_accelerometer_1000.csv")
 SAMPLE_COUNT = 1000
 HARSH_BRAKING_INDEX = 549

@@ -1,160 +1,95 @@
-"""SQLite repository used to persist telemetry events locally.
-
-The repository replaces the unbounded in-memory buffer from the initial POC.
-Events remain stored locally while connectivity is unavailable and are marked
-as synchronized only after a successful transmission.
-"""
+"""Fonctions SQLite du POC : stocker les alertes et les reprendre après une panne."""
 
 import json
 import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Iterable
+import time
+import uuid
+from contextlib import closing
 
-from src.domain.telemetry_event import TelemetryEvent
+DB_PATH = "greenmove.db"
+MAX_RETRY_DELAY = 300
 
 
-class EventRepository:
-    """Persist telemetry events and track their synchronization state."""
+def connect_database():
+    """Ouvrir une connexion à la base locale."""
+    return sqlite3.connect(DB_PATH)
 
-    def __init__(
-        self,
-        db_path: str | Path = "greenmove_events.db",
-    ) -> None:
-        self.db_path = str(db_path)
-        self._initialize()
 
-    @contextmanager
-    def _connection(
-        self,
-    ) -> Iterator[sqlite3.Connection]:
-        """Open and always close a SQLite connection safely.
+def initialize_database():
+    """Préparer la file persistante sans modifier les anciennes tables."""
+    with closing(connect_database()) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS pending_alerts (
+                alert_id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                attempts INTEGER DEFAULT 0,
+                next_attempt_at REAL DEFAULT 0
+            )
+        """)
+        connection.commit()
 
-        Explicit closure is important on Windows because an open connection
-        may keep the database file locked after the operation has completed.
-        """
-        connection = sqlite3.connect(
-            self.db_path
+
+def save_alert(sample):
+    """Créer l'identité une seule fois et enregistrer avant tout appel HTTP."""
+    alert_id = str(uuid.uuid4())
+    captured_at = time.time()
+    payload = {"event_type": "harsh_braking", **sample}
+    payload["alert_id"] = alert_id
+    payload["captured_at"] = captured_at
+
+    with closing(connect_database()) as connection:
+        connection.execute(
+            """
+            INSERT INTO pending_alerts(alert_id, payload, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (alert_id, json.dumps(payload), captured_at),
         )
-        connection.row_factory = sqlite3.Row
+        connection.commit()
+    print(f"[STOCKEE] Alerte {alert_id} enregistree dans SQLite.")
+    return alert_id
 
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
 
-    def _initialize(self) -> None:
-        """Create the event table when the database is first used."""
-        with self._connection() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_type TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    synced INTEGER NOT NULL DEFAULT 0
-                )
-                """
-            )
+def get_pending_alerts(limit=20):
+    """Lire les alertes dont le délai de reprise est écoulé."""
+    with closing(connect_database()) as connection:
+        rows = connection.execute(
+            """
+            SELECT alert_id, payload, attempts FROM pending_alerts
+            WHERE next_attempt_at <= ?
+            ORDER BY created_at LIMIT ?
+            """,
+            (time.time(), limit),
+        ).fetchall()
+    return rows
 
-    def add(
-        self,
-        event: TelemetryEvent,
-    ) -> int:
-        """Persist an event as pending and return its database identifier."""
-        with self._connection() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO events(
-                    event_type,
-                    payload,
-                    created_at,
-                    synced
-                )
-                VALUES (?, ?, ?, 0)
-                """,
-                (
-                    event.event_type,
-                    json.dumps(event.payload),
-                    event.created_at,
-                ),
-            )
 
-            return int(cursor.lastrowid)
-
-    def pending(
-        self,
-        limit: int = 100,
-    ) -> list[dict]:
-        """Return unsynchronized events, oldest first.
-
-        A limit is used so synchronization happens in bounded batches rather
-        than loading the whole local database in memory.
-        """
-        with self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT
-                    id,
-                    event_type,
-                    payload,
-                    created_at
-                FROM events
-                WHERE synced = 0
-                ORDER BY id
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-
-        return [
-            {
-                "id": int(row["id"]),
-                "event_type": row["event_type"],
-                "payload": json.loads(
-                    row["payload"]
-                ),
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
-
-    def mark_synced(
-        self,
-        event_ids: Iterable[int],
-    ) -> None:
-        """Mark successfully transmitted events as synchronized."""
-        ids = list(event_ids)
-
-        if not ids:
-            return
-
-        placeholders = ",".join(
-            "?" for _ in ids
+def schedule_retry(alert_id, attempts):
+    """Espacer les essais : 2, 4, 8 secondes, jusqu'à 300 secondes."""
+    attempts = attempts + 1
+    next_attempt_at = time.time() + min(2**attempts, MAX_RETRY_DELAY)
+    with closing(connect_database()) as connection:
+        connection.execute(
+            """
+            UPDATE pending_alerts SET attempts = ?, next_attempt_at = ?
+            WHERE alert_id = ?
+            """,
+            (attempts, next_attempt_at, alert_id),
         )
+        connection.commit()
 
-        with self._connection() as connection:
-            connection.execute(
-                f"""
-                UPDATE events
-                SET synced = 1
-                WHERE id IN ({placeholders})
-                """,
-                ids,
-            )
 
-    def pending_count(self) -> int:
-        """Return the number of events still waiting for synchronization."""
-        with self._connection() as connection:
-            row = connection.execute(
-                """
-                SELECT COUNT(*) AS count
-                FROM events
-                WHERE synced = 0
-                """
-            ).fetchone()
+def delete_alert(alert_id):
+    """Supprimer l'alerte après la confirmation de son envoi."""
+    with closing(connect_database()) as connection:
+        connection.execute("DELETE FROM pending_alerts WHERE alert_id = ?", (alert_id,))
+        connection.commit()
 
-        return int(row["count"])
+
+def pending_count():
+    """Compter toutes les alertes conservées, y compris les essais différés."""
+    with closing(connect_database()) as connection:
+        row = connection.execute("SELECT COUNT(*) FROM pending_alerts").fetchone()
+    return row[0]

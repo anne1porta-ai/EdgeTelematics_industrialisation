@@ -6,10 +6,10 @@ production-grade cryptographic signing. A production system would use an
 asymmetric signature verified with a public key embedded on the device.
 """
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
-
 
 MANIFEST_PATH = Path(
     "src/ota/manifest.json"
@@ -79,8 +79,36 @@ def validate_manifest() -> dict:
     }
 
 
+def verify_package(manifest_path) -> dict:
+    """Vérifier le SHA-256 du ZIP voisin du manifeste, sans signature simulée."""
+    manifest_path = Path(manifest_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    package_name = manifest["package"]
+    if Path(package_name).name != package_name:
+        raise ValueError("Le paquet doit être un fichier voisin du manifeste.")
+
+    package_path = manifest_path.parent / package_name
+    if sha256_file(package_path) != manifest["checksum"]:
+        raise ValueError("Le checksum du paquet est invalide.")
+    return manifest
+
+
 def main() -> None:
     """Exit with an error when the OTA package validation fails."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", type=Path, help="Manifeste du paquet ZIP construit.")
+    args = parser.parse_args()
+    if args.manifest is not None:
+        try:
+            result = verify_package(args.manifest)
+        except (OSError, ValueError, KeyError) as error:
+            raise SystemExit(f"[PACKAGE] {error}") from error
+        print(
+            f'[PACKAGE] version={result["version"]} '
+            f'commit={result["commit"]} checksum=valid'
+        )
+        return
+
     result = validate_manifest()
 
     if not result["checksum_valid"]:

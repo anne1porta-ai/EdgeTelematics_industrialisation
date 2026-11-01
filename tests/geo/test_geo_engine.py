@@ -5,11 +5,10 @@ import pytest
 from src.geo.geo_engine import (
     calculate_bounding_box,
     is_inside_bounding_box,
-    is_point_inside_polygon,
     is_point_in_zfe,
+    is_point_inside_polygon,
     load_json_file,
 )
-
 
 POLYGON = [
     {"lat": 45.7800, "lon": 4.8000},

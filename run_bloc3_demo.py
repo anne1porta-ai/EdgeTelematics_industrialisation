@@ -1,93 +1,83 @@
-"""Demonstrate local persistence and deferred network synchronization.
+"""Une alerte de freinage : collecte, stockage SQLite, puis envoi differe."""
 
-The scenario creates one harsh-braking event, simulates a 4G outage, verifies
-that the event remains pending locally, then simulates network recovery and
-verifies that the event is finally synchronized.
-"""
-
+import argparse
+import tempfile
+import threading
+import time
 from pathlib import Path
 
-from src.domain.telemetry_event import TelemetryEvent
-from src.storage.event_repository import EventRepository
-from src.sync.sync_service import SyncService
+import src.storage.event_repository as database
+import src.sync.sync_service as network
+from run_demo import acquisition_loop
+from src.safety.run_safety import INPUT_FILE
+from src.safety.safety_engine import iter_accelerometer_data
 
 
-DB_PATH = Path("bloc3_demo_events.db")
+def sensor_samples():
+    """Une mesure toutes les 100 ms pendant les dix secondes du scenario."""
+    readings = iter_accelerometer_data(INPUT_FILE)
+
+    for number in range(1, 101):
+        if network.STOP_EVENT.is_set():
+            break
+
+        if number == 61:
+            network.NETWORK_AVAILABLE = True
+            print("\n[RESEAU] 4G retablie ; la collecte continue.")
+
+        # Apres le CSV, le capteur simule des mesures normales, sans autre freinage.
+        sample = next(readings, {"timestamp": time.time(), "acc_y": 0.0})
+        yield sample
+
+        if number == 10:
+            print("[CAPTEUR] CSV lu ; poursuite avec des mesures normales simulees.")
+        if number % 10 == 0:
+            state = "OK" if network.NETWORK_AVAILABLE else "COUPEE"
+            print(
+                f"[COLLECTE] {number} mesures lues | 4G {state} | "
+                f"{database.pending_count()} alerte(s) en attente"
+            )
+
+        network.STOP_EVENT.wait(0.1)
 
 
-def offline_sender(
-    _event: dict,
-    _timeout: float,
-) -> None:
-    """Simulate a network outage."""
-    raise ConnectionError(
-        "simulated 4G outage"
-    )
+def demonstrate(folder):
+    print("=== DEMONSTRATION : SQLITE REEL, RESEAU SIMULE ===")
+
+    # 1. Preparer SQLite et lancer le worker avec le reseau coupe.
+    database.DB_PATH = str(folder / "events.sqlite")
+    database.MAX_RETRY_DELAY = 2  # Reprise rapide pendant la presentation.
+    database.initialize_database()
+    network.DEMO_MODE = True
+    network.NETWORK_AVAILABLE = False
+    network.STOP_EVENT.clear()
+    network.FIRST_FAILURE.clear()
+    worker = threading.Thread(target=network.network_worker)
+    worker.start()
+
+    try:
+        # 2. Safety collecte dans le programme principal pendant toute la panne.
+        # 3. Le scenario retablit la 4G ; le worker envoie pendant la collecte.
+        acquisition_loop(
+            output_file=str(folder / "daily_score.json"),
+            samples=sensor_samples(),
+        )
+    finally:
+        network.STOP_EVENT.set()
+        worker.join()
+
+    print(f"Alertes encore en attente : {database.pending_count()}")
+    print(f"Resultats conserves : {folder.resolve()}")
 
 
-def online_sender(
-    event: dict,
-    timeout: float,
-) -> None:
-    """Simulate a successful backend transmission."""
-    print(
-        f'[SYNC] sent id={event["id"]} '
-        f'type={event["event_type"]} '
-        f"timeout={timeout}s"
-    )
-
-
-def main() -> None:
-    """Run the complete offline-then-online demonstration scenario."""
-    if DB_PATH.exists():
-        DB_PATH.unlink()
-
-    repository = EventRepository(DB_PATH)
-
-    event = TelemetryEvent.harsh_braking(
-        acc_y=-3.45,
-        timestamp=1678880005,
-    )
-
-    repository.add(event)
-
-    print(
-        "[LOCAL] pending before sync="
-        f"{repository.pending_count()}"
-    )
-
-    # First attempt: connectivity is unavailable.
-    offline = SyncService(
-        repository,
-        offline_sender,
-        max_attempts=2,
-    )
-
-    result = offline.sync_pending()
-
-    print(
-        "[OFFLINE] "
-        f'synced={result["synced"]} '
-        f'failed={result["failed"]} '
-        f"pending={repository.pending_count()}"
-    )
-
-    # Second attempt: connectivity has returned.
-    online = SyncService(
-        repository,
-        online_sender,
-    )
-
-    result = online.sync_pending()
-
-    print(
-        "[ONLINE] "
-        f'synced={result["synced"]} '
-        f'failed={result["failed"]} '
-        f"pending={repository.pending_count()}"
-    )
-
-    DB_PATH.unlink(missing_ok=True)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-dir", type=Path, default=Path("resultats_demo"))
+    args = parser.parse_args()
+    args.data_dir.mkdir(parents=True, exist_ok=True)
+    # Un dossier par essai conserve les anciennes bases.
+    folder = Path(tempfile.mkdtemp(prefix="essai-", dir=args.data_dir))
+    demonstrate(folder)
 
 
 if __name__ == "__main__":
