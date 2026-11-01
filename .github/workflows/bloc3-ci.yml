@@ -2,6 +2,7 @@ name: Bloc 3 CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -9,9 +10,9 @@ permissions:
   contents: read
 
 env:
-  PYTHON_VERSION: '3.11'
-  PIP_DISABLE_PIP_VERSION_CHECK: '1'
-  PYTHONPATH: '.'
+  PYTHON_VERSION: "3.11"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONPATH: "."
 
 defaults:
   run:
@@ -21,37 +22,58 @@ jobs:
   quality:
     name: Qualite - Ruff et mypy
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v7
+      - name: Recuperer le code
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
       - name: Installer les outils CI
         run: python -m pip install -r requirements-ci.txt
-      - name: Verifier le code
+
+      - name: Verifier le code avec Ruff
         run: python -m ruff check --isolated --select E4,E7,E9,F,I .
-      - name: Verifier les types
-        run: python -m mypy --explicit-package-bases --check-untyped-defs src scripts run_demo.py run_bloc3_demo.py
+
+      - name: Verifier les types avec mypy
+        run: >
+          python -m mypy
+          --explicit-package-bases
+          --check-untyped-defs
+          src scripts run_demo.py run_bloc3_demo.py
 
   tests:
     name: Tests - pytest et rapport JUnit
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v7
+      - name: Recuperer le code
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
       - name: Installer les outils CI
         run: python -m pip install -r requirements-ci.txt
+
+      - name: Creer le dossier des rapports
+        run: mkdir -p reports
+
       - name: Executer les tests
         run: python -m pytest -q --junitxml=reports/pytest.xml
+
       - name: Conserver le rapport meme apres un echec
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: greenmove-pytest-report
           path: reports/pytest.xml
@@ -61,31 +83,55 @@ jobs:
   security:
     name: Securite - Bandit, pip-audit et Gitleaks
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v7
+      - name: Recuperer le code
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v7
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
       - name: Installer les outils CI
         run: |
           mkdir -p reports
           python -m pip install -r requirements-ci.txt
+
       - name: Analyser le code applicatif avec Bandit
-        if: ${{ !cancelled() }}
-        run: python -m bandit -r src scripts run_demo.py run_bloc3_demo.py -x tests,scripts/tests -f json -o reports/bandit.json
-      - name: Auditer les dependances du projet
-        if: ${{ !cancelled() }}
-        run: python -m pip_audit -r requirements.txt --format json --output reports/pip-audit.json
-      - name: Rechercher les secrets avec la CLI officielle Gitleaks
-        if: ${{ !cancelled() }}
-        # Image publique officielle : aucune licence ni cle Gitleaks necessaire.
-        run: docker run --rm --user "$(id -u):$(id -g)" --volume "$GITHUB_WORKSPACE:/repo" --workdir /repo ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact --report-format json --report-path reports/gitleaks.json .
+        run: >
+          python -m bandit
+          -r src scripts run_demo.py run_bloc3_demo.py
+          -x tests,scripts/tests
+          -f json
+          -o reports/bandit.json
+
+      - name: Auditer les dependances avec pip-audit
+        run: >
+          python -m pip_audit
+          -r requirements.txt
+          --format json
+          --output reports/pip-audit.json
+
+      - name: Rechercher les secrets avec Gitleaks
+        run: >
+          docker run --rm
+          --user "$(id -u):$(id -g)"
+          --volume "$GITHUB_WORKSPACE:/repo"
+          --workdir /repo
+          ghcr.io/gitleaks/gitleaks:v8.30.1
+          git
+          --redact
+          --report-format json
+          --report-path reports/gitleaks.json
+          .
+
       - name: Conserver les rapports de securite
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: greenmove-security-reports
           path: reports/
@@ -93,57 +139,149 @@ jobs:
           retention-days: 30
 
   build:
-    name: Construire le paquet et son manifeste
+    name: Build OTA - paquet, hash et signature
     needs: [quality, tests, security]
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v7
+      - name: Recuperer le code
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Construire une seule fois
-        run: python -m scripts.build_package --version "demo-${GITHUB_RUN_NUMBER}" --commit "$GITHUB_SHA" --output-dir dist
-      - name: Conserver le paquet construit
-        uses: actions/upload-artifact@v7
+
+      - name: Construire le paquet une seule fois
+        run: |
+          python -m scripts.build_package \
+            --version "demo-${GITHUB_RUN_NUMBER}" \
+            --commit "$GITHUB_SHA" \
+            --output-dir dist
+
+      - name: Identifier le paquet construit
+        run: |
+          PACKAGE="$(find dist -maxdepth 1 -type f -name '*.zip' | head -n 1)"
+          test -n "$PACKAGE" || (echo "Aucun paquet ZIP trouve dans dist/" && exit 1)
+          echo "PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
+          echo "Paquet construit : $PACKAGE"
+
+      - name: Calculer le SHA-256
+        run: |
+          sha256sum "$PACKAGE" > "${PACKAGE}.sha256"
+          cat "${PACKAGE}.sha256"
+
+      - name: Charger la cle privee depuis GitHub Secrets
+        env:
+          OTA_SIGNING_PRIVATE_KEY: ${{ secrets.OTA_SIGNING_PRIVATE_KEY }}
+        run: |
+          test -n "$OTA_SIGNING_PRIVATE_KEY" || (
+            echo "Secret OTA_SIGNING_PRIVATE_KEY absent"
+            exit 1
+          )
+          printf '%s\n' "$OTA_SIGNING_PRIVATE_KEY" > ota_private.pem
+          chmod 600 ota_private.pem
+
+      - name: Signer le paquet OTA
+        run: |
+          openssl dgst -sha256 \
+            -sign ota_private.pem \
+            -out "${PACKAGE}.sig" \
+            "$PACKAGE"
+
+      - name: Verifier le hash et la signature
+        run: |
+          test -f keys/ota_public.pem || (
+            echo "keys/ota_public.pem absent"
+            exit 1
+          )
+
+          sha256sum -c "${PACKAGE}.sha256"
+
+          openssl dgst -sha256 \
+            -verify keys/ota_public.pem \
+            -signature "${PACKAGE}.sig" \
+            "$PACKAGE"
+
+      - name: Supprimer la cle privee du runner
+        if: always()
+        run: rm -f ota_private.pem
+
+      - name: Conserver le paquet OTA signe
+        uses: actions/upload-artifact@v4
         with:
-          name: greenmove-build
+          name: greenmove-build-signed
           path: dist/
           if-no-files-found: error
           retention-days: 30
 
   staging:
-    name: Staging simule - paquet, demonstration et rollback
+    name: Staging simule - paquet signe et rollback
     needs: build
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v7
+      - name: Recuperer le code
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
       - name: Installer les dependances du projet
         run: python -m pip install -r requirements.txt
-      - name: Recuperer le paquet construit
-        uses: actions/download-artifact@v8
+
+      - name: Recuperer exactement le paquet signe construit
+        uses: actions/download-artifact@v4
         with:
-          name: greenmove-build
+          name: greenmove-build-signed
           path: dist/
-      - name: Verifier et exercer ce paquet en simulation
-        run: python -m scripts.staging_demo --manifest dist/manifest.json --output-dir staging
+
+      - name: Identifier le paquet recupere
+        run: |
+          PACKAGE="$(find dist -maxdepth 1 -type f -name '*.zip' | head -n 1)"
+          test -n "$PACKAGE" || (echo "Aucun paquet ZIP recupere" && exit 1)
+          echo "PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
+          echo "Paquet staging : $PACKAGE"
+
+      - name: Verifier a nouveau le SHA-256
+        run: |
+          test -f "${PACKAGE}.sha256" || (echo "Fichier SHA-256 absent" && exit 1)
+          sha256sum -c "${PACKAGE}.sha256"
+
+      - name: Verifier a nouveau la signature
+        run: |
+          test -f "${PACKAGE}.sig" || (echo "Signature absente" && exit 1)
+          test -f keys/ota_public.pem || (echo "Cle publique absente" && exit 1)
+
+          openssl dgst -sha256 \
+            -verify keys/ota_public.pem \
+            -signature "${PACKAGE}.sig" \
+            "$PACKAGE"
+
+      - name: Exercer le paquet en staging simule
+        run: >
+          python -m scripts.staging_demo
+          --manifest dist/manifest.json
+          --output-dir staging
+
       - name: Conserver le rapport de staging
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: greenmove-staging-report
           path: staging/
           if-no-files-found: warn
           retention-days: 30
-      - name: Rendre le paquet valide disponible pour la promotion manuelle
+
+      - name: Rendre le meme paquet disponible pour la promotion
         if: success()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: greenmove-validated-package
           path: dist/
