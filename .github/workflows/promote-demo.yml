@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: "ID du run Bloc 3 CI a promouvoir"
+        description: "ID du run Bloc 3 CI vert a promouvoir"
         required: true
         type: string
 
@@ -12,36 +12,133 @@ permissions:
   contents: read
   actions: read
 
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONPATH: "."
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   promote:
-    name: Verify, stage and simulate OTA rollout
+    name: Promouvoir le paquet OTA valide
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Download exactly the artifact produced by the selected CI run
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Verifier le run source et afficher ses artefacts
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.source_run_id }}
         run: |
-          mkdir -p promoted
-          gh run download "$RUN_ID" -n ota-signed-package -D promoted
+          echo "Run source selectionne : $RUN_ID"
 
-      - name: Verify hash and signature
+          CONCLUSION="$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${RUN_ID}" \
+            --jq '.conclusion')"
+
+          echo "Conclusion du run source : $CONCLUSION"
+
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "ERREUR : le run source n'est pas termine avec succes."
+            exit 1
+          fi
+
+          echo
+          echo "Artefacts disponibles dans ce run :"
+          gh api \
+            "repos/${{ github.repository }}/actions/runs/${RUN_ID}/artifacts" \
+            --jq '.artifacts[].name'
+
+          if ! gh api \
+            "repos/${{ github.repository }}/actions/runs/${RUN_ID}/artifacts" \
+            --jq '.artifacts[].name' \
+            | grep -Fxq "greenmove-validated-package"; then
+            echo
+            echo "ERREUR : greenmove-validated-package est absent de ce run."
+            echo "Utilise l'ID du nouveau run Bloc 3 CI vert, pas un ancien ID."
+            exit 1
+          fi
+
+      - name: Telecharger le meme paquet valide
+        uses: actions/download-artifact@v4
+        with:
+          name: greenmove-validated-package
+          path: dist/
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+
+      - name: Afficher les fichiers recuperes
         run: |
-          cd promoted
-          PACKAGE="$(ls edge-telematics-*.zip | head -n 1)"
+          echo "Contenu de l'artefact promu :"
+          find dist -maxdepth 2 -type f -print
+
+      - name: Identifier le paquet promu
+        run: |
+          PACKAGE="$(find dist -maxdepth 1 -type f -name '*.zip' | head -n 1)"
+
+          if [ -z "$PACKAGE" ]; then
+            echo "ERREUR : aucun paquet ZIP trouve dans l'artefact."
+            exit 1
+          fi
+
+          echo "PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
+          echo "Paquet promu : $PACKAGE"
+
+      - name: Verifier le SHA-256 du paquet promu
+        run: |
+          if [ ! -f "${PACKAGE}.sha256" ]; then
+            echo "ERREUR : fichier SHA-256 absent."
+            exit 1
+          fi
+
           sha256sum -c "${PACKAGE}.sha256"
-          openssl dgst -sha256 -verify ../keys/ota_public.pem -signature "${PACKAGE}.sig" "$PACKAGE"
-          echo "SIGNED_ARTIFACT=$PACKAGE" >> "$GITHUB_ENV"
 
-      - name: Simulated staging
+      - name: Verifier la signature du paquet promu
         run: |
-          echo "Staging simulated on the exact signed artifact: $SIGNED_ARTIFACT"
-          python scripts/demo_ota_rollout.py --mode staging
+          if [ ! -f "${PACKAGE}.sig" ]; then
+            echo "ERREUR : signature absente."
+            exit 1
+          fi
 
-      - name: Manual Go/No-Go represented by workflow_dispatch
-        run: echo "GO/NO-GO manual approval received for this demo run"
+          if [ ! -f keys/ota_public.pem ]; then
+            echo "ERREUR : cle publique keys/ota_public.pem absente."
+            exit 1
+          fi
 
-      - name: Simulate progressive OTA rollout and rollback N-1
+          openssl dgst -sha256 \
+            -verify keys/ota_public.pem \
+            -signature "${PACKAGE}.sig" \
+            "$PACKAGE"
+
+      - name: Confirmer la promotion sans reconstruction
+        run: |
+          echo "============================================================"
+          echo " PROMOTION OTA AUTORISEE"
+          echo "============================================================"
+          echo "Run CI source          : ${{ inputs.source_run_id }}"
+          echo "Artefact                : greenmove-validated-package"
+          echo "SHA-256                 : OK"
+          echo "Signature               : OK"
+          echo "Staging du run source   : OK"
+          echo "Reconstruction          : NON"
+          echo "Meme paquet promu       : OUI"
+          echo "============================================================"
+
+      - name: Go-No-Go manuel
+        run: |
+          echo "Le lancement manuel de ce workflow represente le GO humain."
+          echo "La version peut maintenant passer au deploiement OTA simule."
+
+      - name: Simuler les vagues OTA et le rollback N-1
         run: python scripts/demo_ota_rollout.py --mode rollout
