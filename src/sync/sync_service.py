@@ -6,7 +6,11 @@ import threading
 
 import requests
 
-from src.storage.event_repository import delete_alert, get_pending_alerts, schedule_retry
+from src.storage.event_repository import (
+    delete_alert,
+    get_pending_alerts,
+    schedule_retry,
+)
 
 API_URL = os.environ.get("GML_API_URL", "")
 API_TOKEN = os.environ.get("GML_API_TOKEN", "")
