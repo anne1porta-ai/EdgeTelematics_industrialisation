@@ -1,4 +1,4 @@
-"""Fonctions SQLite du POC : stocker les alertes et les reprendre après une panne."""
+"""Fonctions SQLite du POC : stocker les alertes et les reprendre apres une panne."""
 
 import json
 import sqlite3
@@ -11,12 +11,10 @@ MAX_RETRY_DELAY = 300
 
 
 def connect_database():
-    """Ouvrir une connexion à la base locale."""
     return sqlite3.connect(DB_PATH)
 
 
 def initialize_database():
-    """Préparer la file persistante sans modifier les anciennes tables."""
     with closing(connect_database()) as connection:
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("""
@@ -32,7 +30,7 @@ def initialize_database():
 
 
 def save_alert(sample):
-    """Créer l'identité une seule fois et enregistrer avant tout appel HTTP."""
+    """Enregistrer l'alerte avant toute tentative reseau."""
     alert_id = str(uuid.uuid4())
     captured_at = time.time()
     payload = {"event_type": "harsh_braking", **sample}
@@ -48,12 +46,13 @@ def save_alert(sample):
             (alert_id, json.dumps(payload), captured_at),
         )
         connection.commit()
-    print(f"[STOCKEE] Alerte {alert_id} enregistree dans SQLite.")
+
+    print("\n[ALERTE] Freinage detecte")
+    print("[SQLITE] Alerte sauvegardee localement avant l'envoi")
     return alert_id
 
 
 def get_pending_alerts(limit=20):
-    """Lire les alertes dont le délai de reprise est écoulé."""
     with closing(connect_database()) as connection:
         rows = connection.execute(
             """
@@ -67,7 +66,6 @@ def get_pending_alerts(limit=20):
 
 
 def schedule_retry(alert_id, attempts):
-    """Espacer les essais : 2, 4, 8 secondes, jusqu'à 300 secondes."""
     attempts = attempts + 1
     delay = min(2**attempts, MAX_RETRY_DELAY)
     next_attempt_at = time.time() + delay
@@ -84,14 +82,12 @@ def schedule_retry(alert_id, attempts):
 
 
 def delete_alert(alert_id):
-    """Supprimer l'alerte après la confirmation de son envoi."""
     with closing(connect_database()) as connection:
         connection.execute("DELETE FROM pending_alerts WHERE alert_id = ?", (alert_id,))
         connection.commit()
 
 
 def pending_count():
-    """Compter toutes les alertes conservées, y compris les essais différés."""
     with closing(connect_database()) as connection:
         row = connection.execute("SELECT COUNT(*) FROM pending_alerts").fetchone()
     return row[0]

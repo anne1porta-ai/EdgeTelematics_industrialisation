@@ -1,3 +1,17 @@
 @echo off
-python -m pytest -q tests/bloc3/test_crisis_regression.py
+chcp 65001 >nul
+cls
+echo ================================================================
+echo        GREENMOVE - 6 TESTS DE NON-REGRESSION DE CRISE
+echo ================================================================
+echo.
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" -m pytest -v tests\bloc3\test_crisis_regression.py
+) else (
+    python -m pytest -v tests\bloc3\test_crisis_regression.py
+)
+echo.
+echo Ces tests couvrent : memoire, decouplage reseau, SQLite,
+echo retry/backoff, ACK/purge, HTTPS-idempotence-timeout.
+echo.
 pause

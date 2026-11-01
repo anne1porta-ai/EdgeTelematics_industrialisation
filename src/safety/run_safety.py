@@ -20,6 +20,7 @@ def run_safety_engine(
     raise_on_error=False,
     samples=None,
     sample_buffer=None,
+    verbose=True,
 ):
     """À chaque freinage, appeler on_event ; dans la démo, c'est save_alert."""
     try:
@@ -38,19 +39,21 @@ def run_safety_engine(
 
         score = analyze_accelerometer_stream(samples, on_event=on_event)
 
-        print("\n[BILAN SAFETY] Collecte terminee.")
-        for event in score["events"]:
-            print(
-                f"[HARSH BRAKING] timestamp={event['timestamp']} "
-                f"acc_y={event['acc_y']} m/s²"
-            )
+        if verbose:
+            print("\n[BILAN SAFETY] Collecte terminee.")
+            for event in score["events"]:
+                print(
+                    f"[HARSH BRAKING] timestamp={event['timestamp']} "
+                    f"acc_y={event['acc_y']} m/s²"
+                )
 
         write_daily_score(score, output_file)
-        print(
-            f"[SAFETY SUMMARY] samples={score['total_samples']} "
-            f"harsh_braking_events={score['harsh_braking_events']}"
-        )
-        print(f"[OUTPUT] {output_file}")
+        if verbose:
+            print(
+                f"[SAFETY SUMMARY] samples={score['total_samples']} "
+                f"harsh_braking_events={score['harsh_braking_events']}"
+            )
+            print(f"[OUTPUT] {output_file}")
 
     except (FileNotFoundError, csv.Error, KeyError, TypeError, ValueError) as error:
         if raise_on_error:
