@@ -39,9 +39,9 @@ def demonstrate(manifest_path, output_dir):
         pending = connection.execute("SELECT COUNT(*) FROM pending_alerts").fetchone()[
             0
         ]
-    if (score["total_samples"], score["harsh_braking_events"], pending) != (100, 1, 0):
+    if (score["total_samples"], score["harsh_braking_events"], pending) != (160, 1, 0):
         raise RuntimeError(
-            "Le paquet ne reproduit pas le scenario 100 mesures / 1 alerte / 0 en attente."
+            "Le paquet ne reproduit pas le scenario 160 mesures / 1 alerte / 0 en attente."
         )
 
     # 2. Un echec volontaire doit conserver la version precedente.
