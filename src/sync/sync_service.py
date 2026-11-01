@@ -55,8 +55,9 @@ def network_worker():
             try:
                 send_alert(alert_id, payload)
             except requests.RequestException:
-                schedule_retry(alert_id, attempts)
-                print(f"[ECHEC] Alerte {alert_id} conservee ; nouvel essai programme.")
+                delay = schedule_retry(alert_id, attempts)
+                print(f"[ECHEC] Alerte {alert_id} conservee dans SQLite.")
+                print(f"[RETRY] Nouvelle tentative dans {delay} s.")
                 FIRST_FAILURE.set()
             else:
                 delete_alert(alert_id)

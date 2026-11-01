@@ -11,7 +11,7 @@ import requests
 
 import src.storage.event_repository as database
 import src.sync.sync_service as network
-from run_demo import acquisition_loop, collect_events
+from run_demo import acquisition_loop, collect_events, recent_samples
 from src.safety.run_safety import run_safety_engine
 from src.safety.safety_engine import analyze_accelerometer_stream
 
@@ -328,3 +328,13 @@ def test_http_sends_stable_identity_and_leaves_old_table_untouched(monkeypatch):
         assert connection.execute("SELECT * FROM events").fetchall() == [
             (1, "harsh_braking", old_payload, "original-date", 0)
         ]
+
+
+def test_memory_buffer_is_bounded():
+    recent_samples.clear()
+    for index in range(1000):
+        recent_samples.append({"timestamp": index, "acc_y": 0.0})
+    assert len(recent_samples) == 600
+    assert recent_samples.maxlen == 600
+    assert recent_samples[0]["timestamp"] == 400
+    recent_samples.clear()

@@ -3,6 +3,7 @@
 import argparse
 import os
 import threading
+from collections import deque
 
 import src.storage.event_repository as database
 import src.sync.sync_service as network
@@ -12,15 +13,31 @@ from src.geo.run_geo import run_geo_engine
 from src.safety.run_safety import INPUT_FILE, run_safety_engine
 from src.storage.event_repository import save_alert
 
+# Historique RAM volontairement borne : au-dela de 600 mesures, les plus anciennes sortent.
+recent_samples = deque(maxlen=600)
+
 
 def acquisition_loop(input_file=INPUT_FILE, output_file="daily_score.json", *, samples=None):
-    """Le code Safety detecte le freinage, puis appelle directement save_alert."""
+    """Lire les capteurs avec un historique RAM borne, puis stocker les alertes."""
+    source = samples if samples is not None else None
+
+    if source is not None:
+        original_source = source
+
+        def bounded_samples():
+            for sample in original_source:
+                recent_samples.append(sample)
+                yield sample
+
+        source = bounded_samples()
+
     run_safety_engine(
         input_file=input_file,
         output_file=output_file,
         on_event=save_alert,
         raise_on_error=True,
-        samples=samples,
+        samples=source,
+        sample_buffer=recent_samples if samples is None else None,
     )
 
 

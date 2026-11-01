@@ -69,7 +69,8 @@ def get_pending_alerts(limit=20):
 def schedule_retry(alert_id, attempts):
     """Espacer les essais : 2, 4, 8 secondes, jusqu'à 300 secondes."""
     attempts = attempts + 1
-    next_attempt_at = time.time() + min(2**attempts, MAX_RETRY_DELAY)
+    delay = min(2**attempts, MAX_RETRY_DELAY)
+    next_attempt_at = time.time() + delay
     with closing(connect_database()) as connection:
         connection.execute(
             """
@@ -79,6 +80,7 @@ def schedule_retry(alert_id, attempts):
             (attempts, next_attempt_at, alert_id),
         )
         connection.commit()
+    return delay
 
 
 def delete_alert(alert_id):

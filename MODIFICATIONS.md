@@ -65,3 +65,10 @@ Le workflow `.github/workflows/bloc3-ci.yml` contrôle le code, lance les tests 
 Le workflow `.github/workflows/promote-demo.yml` permet ensuite de choisir manuellement une CI réussie et de promouvoir exactement son paquet validé. Le simulateur OTA vérifie son SHA-256 avant de modifier l'état local.
 
 Pour présenter le build et le staging sans GitHub : lancer **LANCER_LIVRAISON.bat** après INSTALLER.bat. Les résultats se trouvent dans `dist/` et `staging/`. La logique Safety, Geo, SQLite et d'envoi reste celle décrite ci-dessus.
+
+## Priorites demo - memoire bornee et backoff visible
+- Historique capteurs en RAM borne avec `deque(maxlen=600)` dans `run_demo.py`.
+- La demo affiche une preuve simple : 1 000 mesures injectees, buffer limite a 600/600.
+- Le retry/backoff affiche maintenant les delais reels : 2 s, 4 s, 8 s, etc.
+- La panne 4G est maintenue assez longtemps pour montrer 2 s, 4 s et 8 s avant la reprise.
+- Verification : 42 tests passent.

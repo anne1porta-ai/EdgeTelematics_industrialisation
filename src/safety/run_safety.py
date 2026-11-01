@@ -19,11 +19,23 @@ def run_safety_engine(
     on_event=None,
     raise_on_error=False,
     samples=None,
+    sample_buffer=None,
 ):
     """À chaque freinage, appeler on_event ; dans la démo, c'est save_alert."""
     try:
         if samples is None:
             samples = iter_accelerometer_data(input_file)
+
+        if sample_buffer is not None:
+            original_samples = samples
+
+            def bounded_samples():
+                for sample in original_samples:
+                    sample_buffer.append(sample)
+                    yield sample
+
+            samples = bounded_samples()
+
         score = analyze_accelerometer_stream(samples, on_event=on_event)
 
         print("\n[BILAN SAFETY] Collecte terminee.")
