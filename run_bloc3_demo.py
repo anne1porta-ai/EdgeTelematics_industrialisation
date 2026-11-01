@@ -26,7 +26,7 @@ CYAN = "\033[96m"
 MAGENTA = "\033[95m"
 
 # Etat du petit serveur HTTP utilise uniquement pour la demonstration.
-RECEIVED_IDS = set()
+RECEIVED_IDS: set[str] = set()
 LAST_HTTP_STATUS = "NON TESTE"
 
 

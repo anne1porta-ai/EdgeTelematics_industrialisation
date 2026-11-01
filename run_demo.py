@@ -14,10 +14,10 @@ from src.safety.run_safety import INPUT_FILE, run_safety_engine
 from src.storage.event_repository import save_alert
 
 # Historique RAM volontairement borne : au-dela de 600 mesures, les plus anciennes sortent.
-recent_samples = deque(maxlen=600)
+recent_samples: deque[dict[str, int | float]] = deque(maxlen=600)
 
 
-def acquisition_loop(input_file=INPUT_FILE, output_file="daily_score.json", *, samples=None, verbose=True):
+def acquisition_loop(input_file=INPUT_FILE, output_file="daily_score.json", *, samples=None):
     """Lire les capteurs avec un historique RAM borne, puis stocker les alertes."""
     source = samples if samples is not None else None
 
@@ -38,7 +38,6 @@ def acquisition_loop(input_file=INPUT_FILE, output_file="daily_score.json", *, s
         raise_on_error=True,
         samples=source,
         sample_buffer=recent_samples if samples is None else None,
-        verbose=verbose,
     )
 
 

@@ -4,3 +4,4 @@ mypy==2.4.1
 types-requests==2.33.0.20261030
 bandit==1.9.4
 pip-audit==2.10.1
+cryptography
