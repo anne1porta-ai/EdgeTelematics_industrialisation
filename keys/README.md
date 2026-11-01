@@ -1,18 +1,32 @@
-# OTA signing key
+# Clé de signature OTA
 
-Run from PowerShell at the repository root:
+Le dépôt contient déjà la clé publique utilisée par GitHub Actions :
 
-```powershell
-.\scripts\generate_demo_signing_keys.ps1
+```text
+keys/ota_public.pem
 ```
 
-This creates:
+La clé privée correspondante doit rester uniquement dans le secret GitHub :
 
-- `ota_private.pem` — private demo signing key. **Never commit it.**
-- `keys/ota_public.pem` — public verification key. Commit this file.
+```text
+OTA_SIGNING_PRIVATE_KEY
+```
 
-Then create a GitHub Actions secret named:
+## Remplacer volontairement la paire de clés
 
-`OTA_SIGNING_PRIVATE_KEY`
+Ne régénérer les clés que si le secret GitHub doit aussi être remplacé.
 
-and paste the complete contents of `ota_private.pem`.
+```powershell
+.\.venv\Scripts\python.exe -m pip install cryptography
+Remove-Item .\keys\ota_public.pem
+.\.venv\Scripts\python.exe .\scripts\generate_demo_signing_keys.py
+```
+
+Le script crée :
+
+- `ota_private.pem` : clé privée, interdite dans Git ;
+- `keys/ota_public.pem` : clé publique à committer.
+
+Copier ensuite tout le contenu de `ota_private.pem` dans le secret GitHub `OTA_SIGNING_PRIVATE_KEY`, puis supprimer le fichier local si souhaité.
+
+Le script refuse d'écraser une paire existante afin d'éviter de désynchroniser la clé publique et le secret GitHub.

@@ -29,19 +29,31 @@ def demonstrate(manifest_path, output_dir):
     command = [sys.executable, "run_bloc3_demo.py", "--data-dir", str(capture)]
     # Interpreteur fixe ; le paquet execute est celui construit par cette CI.
     demo = subprocess.run(  # nosec B603
-        command, cwd=application, text=True, capture_output=True, check=True, timeout=30
+        command,
+        cwd=application,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=30,
     )
     print(demo.stdout)
     (output_dir / "demo.log").write_text(demo.stdout, encoding="utf-8")
     report_path = next(capture.glob("essai-*/daily_score.json"))
     score = json.loads(report_path.read_text(encoding="utf-8"))
     with sqlite3.connect(report_path.parent / "events.sqlite") as connection:
-        pending = connection.execute("SELECT COUNT(*) FROM pending_alerts").fetchone()[
-            0
-        ]
-    if (score["total_samples"], score["harsh_braking_events"], pending) != (160, 1, 0):
+        pending = connection.execute(
+            "SELECT COUNT(*) FROM pending_alerts"
+        ).fetchone()[0]
+        synced = connection.execute(
+            "SELECT COUNT(*) FROM event_history WHERE synced = 1"
+        ).fetchone()[0]
+
+    result = (score["total_samples"], score["harsh_braking_events"], pending, synced)
+    if result != (160, 1, 0, 1):
         raise RuntimeError(
-            "Le paquet ne reproduit pas le scenario 160 mesures / 1 alerte / 0 en attente."
+            "Scenario attendu : 160 mesures, 1 freinage, "
+            "0 alerte en attente et 1 alerte historisee."
         )
 
     # 2. Un echec volontaire doit conserver la version precedente.
@@ -83,6 +95,7 @@ def demonstrate(manifest_path, output_dir):
         "samples": score["total_samples"],
         "braking_events": score["harsh_braking_events"],
         "pending_alerts": pending,
+        "synced_alerts": synced,
         "rollback": rollback,
         "installation": installed,
     }

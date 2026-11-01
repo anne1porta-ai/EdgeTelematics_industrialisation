@@ -1,31 +1,43 @@
+"""Generer une paire de cles RSA pour la demonstration OTA."""
+
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-private_key = rsa.generate_private_key(
-    public_exponent=65537,
-    key_size=2048,
-)
+PRIVATE_KEY_PATH = Path("ota_private.pem")
+PUBLIC_KEY_PATH = Path("keys/ota_public.pem")
 
-private_pem = private_key.private_bytes(
-    encoding=serialization.Encoding.PEM,
-    format=serialization.PrivateFormat.PKCS8,
-    encryption_algorithm=serialization.NoEncryption(),
-)
 
-public_pem = private_key.public_key().public_bytes(
-    encoding=serialization.Encoding.PEM,
-    format=serialization.PublicFormat.SubjectPublicKeyInfo,
-)
+def main() -> None:
+    if PRIVATE_KEY_PATH.exists() or PUBLIC_KEY_PATH.exists():
+        raise SystemExit(
+            "Une cle existe deja. Supprime-la explicitement avant d'en generer une autre."
+        )
 
-Path("keys").mkdir(exist_ok=True)
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+    )
 
-Path("ota_private.pem").write_bytes(private_pem)
-Path("keys/ota_public.pem").write_bytes(public_pem)
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
 
-print("✅ Clé privée créée : ota_private.pem")
-print("✅ Clé publique créée : keys/ota_public.pem")
-print()
-print("⚠️ Ne jamais envoyer ota_private.pem sur GitHub")
-print("✅ keys/ota_public.pem peut être commitée")
+    PUBLIC_KEY_PATH.parent.mkdir(exist_ok=True)
+    PRIVATE_KEY_PATH.write_bytes(private_pem)
+    PUBLIC_KEY_PATH.write_bytes(public_pem)
+
+    print("Cle privee creee : ota_private.pem")
+    print("Cle publique creee : keys/ota_public.pem")
+    print("Ne jamais envoyer ota_private.pem sur GitHub.")
+
+
+if __name__ == "__main__":
+    main()

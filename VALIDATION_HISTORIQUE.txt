@@ -135,3 +135,6 @@ LINT
 python -m ruff check --isolated --select E4,E7,E9,F,I run_bloc3_demo.py run_demo.py src/safety/run_safety.py src/storage/event_repository.py tests/bloc3/test_adaptation.py
 Code de sortie : 0
 All checks passed!
+
+Priorites demo : buffer RAM borne 600/600 et backoff visible 2s/4s/8s.
+42 tests valides.

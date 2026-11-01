@@ -26,25 +26,24 @@ CYAN = "\033[96m"
 MAGENTA = "\033[95m"
 
 # Etat du petit serveur HTTP utilise uniquement pour la demonstration.
-RECEIVED_IDS = set()
-LAST_HTTP_STATUS = "NON TESTE"
+RECEIVED_IDS: set[str] = set()
 
 
-def c(text, color):
+def colored(text: str, color: str) -> str:
     return f"{color}{text}{RESET}"
 
 
 def pause(message="Appuyez sur ENTREE pour continuer..."):
     try:
-        input(c(f"\n▶ {message}", CYAN))
+        input(colored(f"\n▶ {message}", CYAN))
     except EOFError:
         pass
 
 
 def section(number, title, color=CYAN):
-    print("\n" + c("=" * WIDTH, color))
-    print(c(f"  {number}. {title}", BOLD + color))
-    print(c("=" * WIDTH, color))
+    print("\n" + colored("=" * WIDTH, color))
+    print(colored(f"  {number}. {title}", BOLD + color))
+    print(colored("=" * WIDTH, color))
 
 
 def line(label, value):
@@ -63,18 +62,18 @@ def sensor_samples():
         if number == 101:
             section(3, "📡 RETOUR DU RESEAU 4G", GREEN)
             network.NETWORK_AVAILABLE = True
-            line("Reseau 4G", c("✅ RETABLI", GREEN))
-            line("Collecte capteurs", c("✅ TOUJOURS ACTIVE", GREEN))
+            line("Reseau 4G", colored("✅ RETABLI", GREEN))
+            line("Collecte capteurs", colored("✅ TOUJOURS ACTIVE", GREEN))
             line("Alertes conservees", database.pending_count())
-            print(c("\nLe worker reprend maintenant l'envoi de l'alerte.", GREEN))
+            print(colored("\nLe worker reprend maintenant l'envoi de l'alerte.", GREEN))
 
         sample = next(readings, {"timestamp": time.time(), "acc_y": 0.0})
         yield sample
 
         if number in (20, 60, 100, 140):
-            network_state = c("✅ OK", GREEN) if network.NETWORK_AVAILABLE else c("⚠️  COUPEE", RED)
+            network_state = colored("✅ OK", GREEN) if network.NETWORK_AVAILABLE else colored("⚠️  COUPEE", RED)
             print(
-                f"{c('📈 COLLECTE', CYAN)} {number:3d} mesures | "
+                f"{colored('📈 COLLECTE', CYAN)} {number:3d} mesures | "
                 f"4G {network_state} | "
                 f"RAM {len(recent_samples)}/{recent_samples.maxlen} | "
                 f"SQLite {database.pending_count()}"
@@ -91,8 +90,6 @@ class DemoApiHandler(BaseHTTPRequestHandler):
         return
 
     def do_POST(self):
-        global LAST_HTTP_STATUS
-
         if self.path == "/slow":
             # Le client abandonnera avant cette reponse.
             time.sleep(2)
@@ -114,8 +111,8 @@ class DemoApiHandler(BaseHTTPRequestHandler):
             if not duplicate:
                 RECEIVED_IDS.add(alert_id)
 
-            LAST_HTTP_STATUS = "DUPLICATE" if duplicate else "STORED"
-            body = json.dumps({"status": LAST_HTTP_STATUS}).encode("utf-8")
+            status = "DUPLICATE" if duplicate else "STORED"
+            body = json.dumps({"status": status}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -144,10 +141,10 @@ def demonstrate_http_timeout(base_url):
         requests.post(f"{base_url}/slow", json={"demo": True}, timeout=1)
     except requests.Timeout:
         elapsed = time.monotonic() - started
-        line("Resultat", c("✅ TIMEOUT DECLENCHE", GREEN))
+        line("Resultat", colored("✅ TIMEOUT DECLENCHE", GREEN))
         line("Attente du client", f"{elapsed:.1f} s environ")
     else:
-        line("Resultat", c("❌ timeout non declenche", RED))
+        line("Resultat", colored("❌ timeout non declenche", RED))
 
 
 def demonstrate_idempotency(base_url):
@@ -160,16 +157,16 @@ def demonstrate_idempotency(base_url):
     first = requests.post(f"{base_url}/events", json=payload, headers=headers, timeout=2).json()
     second = requests.post(f"{base_url}/events", json=payload, headers=headers, timeout=2).json()
 
-    line("1er envoi", c(first["status"], GREEN))
-    line("2e envoi meme alert_id", c(second["status"], YELLOW))
-    line("Enregistrements serveur", c(str(len(RECEIVED_IDS)), GREEN))
-    line("Resultat", c("✅ AUCUN DOUBLON", GREEN))
+    line("1er envoi", colored(first["status"], GREEN))
+    line("2e envoi meme alert_id", colored(second["status"], YELLOW))
+    line("Enregistrements serveur", colored(str(len(RECEIVED_IDS)), GREEN))
+    line("Resultat", colored("✅ AUCUN DOUBLON", GREEN))
 
 
 def demonstrate(folder):
-    print("\n" + c("#" * WIDTH, MAGENTA))
-    print(c("  🚚 DEMO RESILIENCE APRES INCIDENT PILOTE  ".center(WIDTH), BOLD + MAGENTA))
-    print(c("#" * WIDTH, MAGENTA))
+    print("\n" + colored("#" * WIDTH, MAGENTA))
+    print(colored("  🚚 DEMO RESILIENCE APRES INCIDENT PILOTE  ".center(WIDTH), BOLD + MAGENTA))
+    print(colored("#" * WIDTH, MAGENTA))
     print("\nObjectif : montrer qu'une panne 4G ne bloque plus la collecte")
     print("et qu'aucune alerte critique n'est perdue.")
     pause("demarrer la demonstration")
@@ -180,7 +177,7 @@ def demonstrate(folder):
         recent_samples.append({"timestamp": number, "acc_y": 0.0})
     line("Mesures simulees", "1 000")
     line("Buffer RAM", f"{len(recent_samples)} / {recent_samples.maxlen}")
-    line("Resultat", c("✅ MEMOIRE BORNEE", GREEN))
+    line("Resultat", colored("✅ MEMOIRE BORNEE", GREEN))
     recent_samples.clear()
 
     pause("simuler maintenant la coupure 4G")
@@ -195,12 +192,12 @@ def demonstrate(folder):
     network.STOP_EVENT.clear()
     network.FIRST_FAILURE.clear()
 
-    line("Reseau 4G", c("❌ COUPE", RED))
-    line("Collecte capteurs", c("✅ ACTIVE", GREEN))
+    line("Reseau 4G", colored("❌ COUPE", RED))
+    line("Collecte capteurs", colored("✅ ACTIVE", GREEN))
     line("Alertes SQLite", "0")
-    print(c("\n💾 Un freinage est persiste dans SQLite AVANT l'envoi.", YELLOW))
-    print(c("🔁 Le worker reessaie avec un backoff : 2 s → 4 s → 8 s.", YELLOW))
-    print(c("📈 Pendant ce temps, la collecte continue.", GREEN))
+    print(colored("\n💾 Un freinage est persiste dans SQLite AVANT l'envoi.", YELLOW))
+    print(colored("🔁 Le worker reessaie avec un backoff : 2 s → 4 s → 8 s.", YELLOW))
+    print(colored("📈 Pendant ce temps, la collecte continue.", GREEN))
 
     worker = threading.Thread(target=network.network_worker, name="network-worker")
     worker.start()
@@ -228,30 +225,30 @@ def demonstrate(folder):
 
     section(6, "📊 TELEMETRIE FINALE", MAGENTA)
     line("Version demo", "POC-resilience")
-    line("Buffer RAM max", c(f"{recent_samples.maxlen} mesures", GREEN))
-    line("Alertes SQLite en attente", c(str(database.pending_count()), GREEN))
-    line("Historique synchronise", c(str(database.synced_count()), GREEN))
-    line("Collecte", c("ACTIVE / NON BLOQUEE", GREEN))
-    line("Dernier test HTTP", c("OK", GREEN))
-    line("Idempotence serveur", c("OK - 1 stockage pour 2 envois", GREEN))
+    line("Buffer RAM max", colored(f"{recent_samples.maxlen} mesures", GREEN))
+    line("Alertes SQLite en attente", colored(str(database.pending_count()), GREEN))
+    line("Historique synchronise", colored(str(database.synced_count()), GREEN))
+    line("Collecte", colored("ACTIVE / NON BLOQUEE", GREEN))
+    line("Dernier test HTTP", colored("OK", GREEN))
+    line("Idempotence serveur", colored("OK - 1 stockage pour 2 envois", GREEN))
 
     section(7, "🏁 BILAN", MAGENTA)
-    line("Memoire bornee", c("✅ OUI", GREEN))
-    line("Collecte continue", c("✅ OUI", GREEN))
-    line("Alerte conservee hors ligne", c("✅ OUI", GREEN))
-    line("Aucune alerte perdue", c("✅ OUI", GREEN))
-    line("Backoff observe", c("✅ 2 s → 4 s → 8 s", GREEN))
-    line("Timeout HTTP", c("✅ DEMONTRE", GREEN))
-    line("Idempotence", c("✅ DEMONTREE", GREEN))
-    line("Purge uniquement apres succes", c("✅ OUI", GREEN))
-    line("Alertes encore en attente", c(str(database.pending_count()), GREEN))
-    line("Alertes archivees synced=1", c(str(database.synced_count()), GREEN))
+    line("Memoire bornee", colored("✅ OUI", GREEN))
+    line("Collecte continue", colored("✅ OUI", GREEN))
+    line("Alerte conservee hors ligne", colored("✅ OUI", GREEN))
+    line("Aucune alerte perdue", colored("✅ OUI", GREEN))
+    line("Backoff observe", colored("✅ 2 s → 4 s → 8 s", GREEN))
+    line("Timeout HTTP", colored("✅ DEMONTRE", GREEN))
+    line("Idempotence", colored("✅ DEMONTREE", GREEN))
+    line("Purge uniquement apres succes", colored("✅ OUI", GREEN))
+    line("Alertes encore en attente", colored(str(database.pending_count()), GREEN))
+    line("Alertes archivees synced=1", colored(str(database.synced_count()), GREEN))
 
-    print("\n" + c("-" * WIDTH, CYAN))
-    print(c("✅ CONCLUSION", BOLD + GREEN))
+    print("\n" + colored("-" * WIDTH, CYAN))
+    print(colored("✅ CONCLUSION", BOLD + GREEN))
     print("La securite locale continue meme sans reseau :")
     print("memoire bornee, alerte durable, reprise, timeout et anti-doublon.")
-    print(c("-" * WIDTH, CYAN))
+    print(colored("-" * WIDTH, CYAN))
 
 
 def main():

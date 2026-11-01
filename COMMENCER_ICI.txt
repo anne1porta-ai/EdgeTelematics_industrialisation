@@ -1,11 +1,17 @@
-GREENMOVE — VERSION CODE + RESULTATS — MODE VS CODE
+GREENMOVE — DEMARRAGE RAPIDE DANS VS CODE
 
-1. Ouvrir VS Code → Fichier → Ouvrir un dossier → GreenMove_Demo_Code_et_Resultats
-2. Ouvrir GreenMove_CODE_ET_RESULTATS.ipynb
-3. Choisir le noyau Python 3.12 / .venv si disponible
-4. Si des paquets manquent, exécuter dans une cellule : %pip install ipykernel matplotlib
-5. Exécuter la 1re cellule d initialisation, puis une étape à la fois.
-6. Sous chaque cellule : vrai code du projet A GAUCHE ; résultat A DROITE.
-7. Ctrl+B dans VS Code pour agrandir la partie Notebook.
+1. Ouvrir le dossier du projet dans VS Code.
+2. Lancer INSTALLER.bat une seule fois pour creer .venv.
+3. Lancer LANCER_DEMO_CRISE.bat pour la demo de resilience.
+4. Lancer LANCER_TESTS_CRISE.bat pour les 6 preuves liees au pilote.
+5. Lancer LANCER_TESTS.bat pour toute la suite pytest.
+6. Lancer LANCER_LIVRAISON.bat pour le build et le staging locaux.
+7. Les workflows GitHub sont dans .github/workflows/.
 
-Le code métier original se trouve dans les dossiers src/. Les graphiques servent à expliquer les décisions, pas à les simuler.
+FICHIERS A MONTRER A L'ORAL
+- run_bloc3_demo.py : scenario de panne et reprise.
+- src/storage/event_repository.py : SQLite et historique synced=1.
+- src/sync/sync_service.py : envoi, timeout et backoff.
+- tests/bloc3/test_crisis_regression.py : preuves automatiques.
+- .github/workflows/bloc3-ci.yml : CI, signature et staging.
+- .github/workflows/promote-demo.yml : promotion du meme artefact.
