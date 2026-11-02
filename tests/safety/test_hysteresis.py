@@ -1,8 +1,4 @@
-from src.safety.safety_engine import (
-    analyze_accelerometer_stream,
-    build_daily_score,
-    detect_harsh_braking_events,
-)
+from src.safety.safety_engine import analyze_accelerometer_stream
 
 
 def make_samples(values):
@@ -39,16 +35,17 @@ def test_threshold_equalities_and_band_preserve_state_until_strict_rearming():
     ]
 
 
-def test_batch_and_stream_agree_and_batch_preserves_complete_samples():
+def test_two_stream_runs_produce_the_same_events():
     samples = make_samples([0.0, -3.0, -3.4, -2.4, -2.3, -2.2, -2.5, -3.5])
 
-    batch_events = detect_harsh_braking_events(samples)
-    score = analyze_accelerometer_stream(iter(samples))
+    first = analyze_accelerometer_stream(iter(samples))
+    second = analyze_accelerometer_stream(iter(samples))
 
-    assert batch_events == [samples[1], samples[7]]
-    assert batch_events[0] is samples[1]
-    assert batch_events[1] is samples[7]
-    assert score == build_daily_score(samples, batch_events)
+    assert first == second
+    assert first["events"] == [
+        {"timestamp": 1, "acc_y": -3.0},
+        {"timestamp": 7, "acc_y": -3.5},
+    ]
 
 
 def test_callback_is_immediate_without_retaining_events():

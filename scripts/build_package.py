@@ -27,7 +27,7 @@ def build_package(output_dir=Path("dist"), version="demo-local", commit="local")
     ]
     for directory in ("src", "data", "scripts"):
         files.extend(path for path in (PROJECT_ROOT / directory).rglob("*") if path.is_file())
-    for launcher in ("INSTALLER.bat", "LANCER_PROJET.bat"):
+    for launcher in ("INSTALLER.bat", "LANCER_DEMO_CRISE.bat"):
         if (PROJECT_ROOT / launcher).is_file():
             files.append(PROJECT_ROOT / launcher)
 

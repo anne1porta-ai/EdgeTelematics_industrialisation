@@ -1,35 +1,31 @@
 VALIDATION DE LA VERSION SIMPLIFIEE
+===================================
 
-Base : EdgeTelematics_industrialisation-main(1).zip
-Objectif : simplifier le code sans supprimer de fonctionnalité.
+Fonctionnalites attendues :
+- traitement en flux sans historique de mesures en RAM ;
+- Geo et Safety conserves ;
+- SQLite avant envoi ;
+- worker reseau separe ;
+- backoff 2 s / 4 s / 8 s ;
+- timeout HTTP ;
+- idempotence ;
+- archivage synced=1 apres succes ;
+- build, staging et OTA conserves.
 
-RESULTATS EXECUTES DANS CET ENVIRONNEMENT
-- Compilation Python : succes.
-- pytest -q : 49 tests reussis.
-- Demo de crise : succes.
-  - 160 mesures.
-  - 1 freinage.
-  - buffer 600/600.
-  - backoff 2 s, 4 s, 8 s.
-  - timeout HTTP declenche.
-  - idempotence : STORED puis DUPLICATE.
-  - 0 alerte en attente.
-  - 1 alerte dans event_history avec synced=1.
-- Mode stress : succes.
-  - 1 000 mesures traitees en flux.
-  - 1 freinage.
-  - alertes Geo et Safety stockees dans SQLite.
-- Build local : succes.
-- Verification SHA-256 : succes.
-- Staging du code extrait : succes.
-  - scenario 160 / 1 / 0 / 1 valide.
-  - rollback simule valide.
-  - installation suivante du meme paquet validee.
-- Simulation des vagues OTA : disponible dans scripts/demo_ota_rollout.py.
+Commandes de validation :
 
-CONTROLES NON EXECUTES ICI
-- Ruff, mypy, Bandit, pip-audit et Gitleaks : les dependances CI ne sont pas disponibles hors ligne dans cet environnement ; le workflow GitHub les execute.
-- Signature GitHub avec OTA_SIGNING_PRIVATE_KEY : a verifier dans GitHub Actions.
-- Essais Zebra, zone blanche, reboot et endurance 8 h : validations terrain.
+python -m pytest -q
+python run_bloc3_demo.py --data-dir resultats_demo
+python run_demo.py --stress
+python -m scripts.build_package --version demo-local
+python -m scripts.staging_demo --manifest dist/manifest.json --output-dir staging
+python scripts/demo_ota_rollout.py --mode rollout
 
-L'historique des validations precedentes est conserve dans VALIDATION_HISTORIQUE.txt.
+Resultat fonctionnel attendu de la demo :
+- 10 000 mesures traitees sans historique RAM ;
+- 160 mesures dans la sequence de panne ;
+- 1 freinage ;
+- 0 alerte en attente ;
+- 1 alerte dans event_history ;
+- timeout declenche ;
+- 1 stockage pour 2 envois identiques.

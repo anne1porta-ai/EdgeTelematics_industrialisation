@@ -1,4 +1,4 @@
-"""Demo orale : resilience Edge, timeout HTTP, idempotence et telemetrie."""
+"""Demo orale : traitement en flux, resilience, timeout et idempotence."""
 
 import argparse
 import json
@@ -12,9 +12,12 @@ import requests
 
 import src.storage.event_repository as database
 import src.sync.sync_service as network
-from run_demo import acquisition_loop, recent_samples
+from run_demo import acquisition_loop
 from src.safety.run_safety import INPUT_FILE
-from src.safety.safety_engine import iter_accelerometer_data
+from src.safety.safety_engine import (
+    analyze_accelerometer_stream,
+    iter_accelerometer_data,
+)
 
 WIDTH = 72
 RESET = "\033[0m"
@@ -25,7 +28,6 @@ RED = "\033[91m"
 CYAN = "\033[96m"
 MAGENTA = "\033[95m"
 
-# Etat du petit serveur HTTP utilise uniquement pour la demonstration.
 RECEIVED_IDS: set[str] = set()
 
 
@@ -33,65 +35,125 @@ def colored(text: str, color: str) -> str:
     return f"{color}{text}{RESET}"
 
 
-def pause(message="Appuyez sur ENTREE pour continuer..."):
+def pause(message: str = "Appuyez sur ENTREE pour continuer...") -> None:
     try:
         input(colored(f"\n▶ {message}", CYAN))
     except EOFError:
         pass
 
 
-def section(number, title, color=CYAN):
+def section(number: int, title: str, color: str = CYAN) -> None:
     print("\n" + colored("=" * WIDTH, color))
     print(colored(f"  {number}. {title}", BOLD + color))
     print(colored("=" * WIDTH, color))
 
 
-def line(label, value):
+def line(label: str, value: object) -> None:
     print(f"{label:<34}: {value}")
 
 
-def sensor_samples():
-    """Lire les mesures a 10 Hz pendant la panne puis la reprise."""
+def demonstrate_streaming() -> None:
+    """Prouver que les mesures sont traitees sans historique en memoire."""
+    section(1, "🧠 TRAITEMENT EN FLUX", CYAN)
+
+    def samples():
+        for number in range(10_000):
+            yield {"timestamp": number, "acc_y": 0.0}
+
+    score = analyze_accelerometer_stream(samples(), retain_events=False)
+    line("Mesures traitees", f"{score['total_samples']:,}".replace(",", " "))
+    line("Historique de mesures en RAM", "0")
+    line("Traitement", "une mesure a la fois")
+    line("Resultat", colored("✅ AUCUNE ACCUMULATION", GREEN))
+
+
+def sensor_samples(
+    network_available: threading.Event,
+    stop_event: threading.Event,
+):
+    """Lire 160 mesures a 10 Hz pendant la panne puis la reprise."""
     readings = iter_accelerometer_data(INPUT_FILE)
 
     for number in range(1, 161):
-        if network.STOP_EVENT.is_set():
+        if stop_event.is_set():
             break
 
-        # Retour automatique apres avoir rendu visibles 2 s, 4 s et 8 s.
         if number == 101:
             section(3, "📡 RETOUR DU RESEAU 4G", GREEN)
-            network.NETWORK_AVAILABLE = True
+            network_available.set()
             line("Reseau 4G", colored("✅ RETABLI", GREEN))
             line("Collecte capteurs", colored("✅ TOUJOURS ACTIVE", GREEN))
             line("Alertes conservees", database.pending_count())
-            print(colored("\nLe worker reprend maintenant l'envoi de l'alerte.", GREEN))
+            print(colored("\nLe worker reprend maintenant l'envoi.", GREEN))
 
         sample = next(readings, {"timestamp": time.time(), "acc_y": 0.0})
         yield sample
 
         if number in (20, 60, 100, 140):
-            network_state = colored("✅ OK", GREEN) if network.NETWORK_AVAILABLE else colored("⚠️  COUPEE", RED)
+            state = (
+                colored("✅ OK", GREEN)
+                if network_available.is_set()
+                else colored("⚠️  COUPEE", RED)
+            )
             print(
                 f"{colored('📈 COLLECTE', CYAN)} {number:3d} mesures | "
-                f"4G {network_state} | "
-                f"RAM {len(recent_samples)}/{recent_samples.maxlen} | "
+                f"4G {state} | historique RAM 0 | "
                 f"SQLite {database.pending_count()}"
             )
 
-        network.STOP_EVENT.wait(0.1)
+        stop_event.wait(0.1)
+
+
+def demonstrate_network_outage(folder: Path) -> None:
+    """Montrer Store-and-Forward et backoff sans polluer le code metier."""
+    section(2, "⚠️  PANNE 4G + STORE-AND-FORWARD", RED)
+    database.DB_PATH = str(folder / "events.sqlite")
+    database.MAX_RETRY_DELAY = 300
+    database.initialize_database()
+
+    network_available = threading.Event()
+    stop_event = threading.Event()
+
+    def demo_sender(alert_id: str, _payload: str) -> None:
+        if not network_available.is_set():
+            raise requests.ConnectionError("4G coupee")
+        print(f"[RECU] Alerte {alert_id} recue par le serveur simule.")
+
+    line("Reseau 4G", colored("❌ COUPE", RED))
+    line("Collecte capteurs", colored("✅ ACTIVE", GREEN))
+    line("Alertes SQLite", "0")
+    print(colored("\n💾 Le freinage est stocke avant l'envoi.", YELLOW))
+    print(colored("🔁 Le worker attend 2 s, puis 4 s, puis 8 s.", YELLOW))
+    print(colored("📈 La collecte continue sans historique RAM.", GREEN))
+
+    worker = threading.Thread(
+        target=network.network_worker,
+        kwargs={
+            "sender": demo_sender,
+            "stop_event": stop_event,
+        },
+        name="network-worker",
+    )
+    worker.start()
+
+    try:
+        acquisition_loop(
+            output_file=str(folder / "daily_score.json"),
+            samples=sensor_samples(network_available, stop_event),
+        )
+    finally:
+        stop_event.set()
+        worker.join()
 
 
 class DemoApiHandler(BaseHTTPRequestHandler):
     """Mini API locale : une route lente et une route idempotente."""
 
-    def log_message(self, *_args):
-        # Evite les logs HTTP techniques dans la demo.
+    def log_message(self, *_args) -> None:
         return
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         if self.path == "/slow":
-            # Le client abandonnera avant cette reponse.
             time.sleep(2)
             try:
                 self.send_response(200)
@@ -124,17 +186,17 @@ class DemoApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
-def start_demo_api():
+def start_demo_api() -> ThreadingHTTPServer:
     server = ThreadingHTTPServer(("127.0.0.1", 0), DemoApiHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
 
 
-def demonstrate_http_timeout(base_url):
+def demonstrate_http_timeout(base_url: str) -> None:
     section(4, "⏱️  TIMEOUT HTTP REEL", YELLOW)
     print("Le serveur local attend volontairement 2 s.")
-    print("Le client abandonne apres 1 s : la collecte ne reste pas bloquee.")
+    print("Le client abandonne apres 1 s.")
 
     started = time.monotonic()
     try:
@@ -147,15 +209,19 @@ def demonstrate_http_timeout(base_url):
         line("Resultat", colored("❌ timeout non declenche", RED))
 
 
-def demonstrate_idempotency(base_url):
+def demonstrate_idempotency(base_url: str) -> None:
     section(5, "🔁 IDEMPOTENCE COTE SERVEUR", CYAN)
     RECEIVED_IDS.clear()
     alert_id = "demo-alert-001"
     headers = {"Idempotency-Key": alert_id}
     payload = {"event_type": "harsh_braking", "acc_y": -3.45}
 
-    first = requests.post(f"{base_url}/events", json=payload, headers=headers, timeout=2).json()
-    second = requests.post(f"{base_url}/events", json=payload, headers=headers, timeout=2).json()
+    first = requests.post(
+        f"{base_url}/events", json=payload, headers=headers, timeout=2
+    ).json()
+    second = requests.post(
+        f"{base_url}/events", json=payload, headers=headers, timeout=2
+    ).json()
 
     line("1er envoi", colored(first["status"], GREEN))
     line("2e envoi meme alert_id", colored(second["status"], YELLOW))
@@ -163,54 +229,8 @@ def demonstrate_idempotency(base_url):
     line("Resultat", colored("✅ AUCUN DOUBLON", GREEN))
 
 
-def demonstrate(folder):
-    print("\n" + colored("#" * WIDTH, MAGENTA))
-    print(colored("  🚚 DEMO RESILIENCE APRES INCIDENT PILOTE  ".center(WIDTH), BOLD + MAGENTA))
-    print(colored("#" * WIDTH, MAGENTA))
-    print("\nObjectif : montrer qu'une panne 4G ne bloque plus la collecte")
-    print("et qu'aucune alerte critique n'est perdue.")
-    pause("demarrer la demonstration")
-
-    section(1, "🧠 PROTECTION MEMOIRE", CYAN)
-    recent_samples.clear()
-    for number in range(1000):
-        recent_samples.append({"timestamp": number, "acc_y": 0.0})
-    line("Mesures simulees", "1 000")
-    line("Buffer RAM", f"{len(recent_samples)} / {recent_samples.maxlen}")
-    line("Resultat", colored("✅ MEMOIRE BORNEE", GREEN))
-    recent_samples.clear()
-
-    pause("simuler maintenant la coupure 4G")
-
-    section(2, "⚠️  PANNE 4G + STORE-AND-FORWARD", RED)
-    database.DB_PATH = str(folder / "events.sqlite")
-    database.MAX_RETRY_DELAY = 300
-    database.initialize_database()
-
-    network.DEMO_MODE = True
-    network.NETWORK_AVAILABLE = False
-    network.STOP_EVENT.clear()
-    network.FIRST_FAILURE.clear()
-
-    line("Reseau 4G", colored("❌ COUPE", RED))
-    line("Collecte capteurs", colored("✅ ACTIVE", GREEN))
-    line("Alertes SQLite", "0")
-    print(colored("\n💾 Un freinage est persiste dans SQLite AVANT l'envoi.", YELLOW))
-    print(colored("🔁 Le worker reessaie avec un backoff : 2 s → 4 s → 8 s.", YELLOW))
-    print(colored("📈 Pendant ce temps, la collecte continue.", GREEN))
-
-    worker = threading.Thread(target=network.network_worker, name="network-worker")
-    worker.start()
-    try:
-        acquisition_loop(
-            output_file=str(folder / "daily_score.json"),
-            samples=sensor_samples(),
-        )
-    finally:
-        network.STOP_EVENT.set()
-        worker.join()
-
-    pause("tester maintenant le timeout HTTP reel")
+def demonstrate_http() -> None:
+    """Montrer le timeout puis la deduplication avec un serveur local."""
     server = start_demo_api()
     base_url = f"http://127.0.0.1:{server.server_port}"
     try:
@@ -221,11 +241,11 @@ def demonstrate(folder):
         server.shutdown()
         server.server_close()
 
-    pause("afficher la telemetrie et le bilan final")
 
+def show_final_report() -> None:
     section(6, "📊 TELEMETRIE FINALE", MAGENTA)
     line("Version demo", "POC-resilience")
-    line("Buffer RAM max", colored(f"{recent_samples.maxlen} mesures", GREEN))
+    line("Historique de mesures en RAM", colored("0", GREEN))
     line("Alertes SQLite en attente", colored(str(database.pending_count()), GREEN))
     line("Historique synchronise", colored(str(database.synced_count()), GREEN))
     line("Collecte", colored("ACTIVE / NON BLOQUEE", GREEN))
@@ -233,25 +253,48 @@ def demonstrate(folder):
     line("Idempotence serveur", colored("OK - 1 stockage pour 2 envois", GREEN))
 
     section(7, "🏁 BILAN", MAGENTA)
-    line("Memoire bornee", colored("✅ OUI", GREEN))
+    line("Traitement en flux", colored("✅ OUI", GREEN))
+    line("Accumulation des mesures", colored("✅ NON", GREEN))
     line("Collecte continue", colored("✅ OUI", GREEN))
     line("Alerte conservee hors ligne", colored("✅ OUI", GREEN))
     line("Aucune alerte perdue", colored("✅ OUI", GREEN))
     line("Backoff observe", colored("✅ 2 s → 4 s → 8 s", GREEN))
     line("Timeout HTTP", colored("✅ DEMONTRE", GREEN))
     line("Idempotence", colored("✅ DEMONTREE", GREEN))
-    line("Purge uniquement apres succes", colored("✅ OUI", GREEN))
+    line("Archivage apres succes", colored("✅ OUI", GREEN))
     line("Alertes encore en attente", colored(str(database.pending_count()), GREEN))
     line("Alertes archivees synced=1", colored(str(database.synced_count()), GREEN))
 
     print("\n" + colored("-" * WIDTH, CYAN))
     print(colored("✅ CONCLUSION", BOLD + GREEN))
-    print("La securite locale continue meme sans reseau :")
-    print("memoire bornee, alerte durable, reprise, timeout et anti-doublon.")
+    print("Les mesures sont traitees une par une et ne s'accumulent pas.")
+    print("Seules les alertes critiques sont conservees dans SQLite.")
     print(colored("-" * WIDTH, CYAN))
 
 
-def main():
+def demonstrate(folder: Path) -> None:
+    print("\n" + colored("#" * WIDTH, MAGENTA))
+    print(
+        colored(
+            "  🚚 DEMO RESILIENCE APRES INCIDENT PILOTE  ".center(WIDTH),
+            BOLD + MAGENTA,
+        )
+    )
+    print(colored("#" * WIDTH, MAGENTA))
+    print("\nObjectif : montrer qu'une panne 4G ne bloque plus la collecte")
+    print("et qu'aucune mesure ne s'accumule inutilement en memoire.")
+    pause("demarrer la demonstration")
+
+    demonstrate_streaming()
+    pause("simuler maintenant la coupure 4G")
+    demonstrate_network_outage(folder)
+    pause("tester maintenant le timeout HTTP reel")
+    demonstrate_http()
+    pause("afficher la telemetrie et le bilan final")
+    show_final_report()
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path("resultats_demo"))
     args = parser.parse_args()

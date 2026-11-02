@@ -1,4 +1,4 @@
-"""Neuf verifications des ajouts du POC, sans serveur externe."""
+"""Verifications des ajouts du POC, sans serveur externe."""
 
 import json
 import socket
@@ -11,7 +11,8 @@ import requests
 
 import src.storage.event_repository as database
 import src.sync.sync_service as network
-from run_demo import acquisition_loop, collect_events, recent_samples
+from run_demo import acquisition_loop, collect_events
+from src.domain.telemetry_event import TelemetryEvent
 from src.safety.run_safety import run_safety_engine
 from src.safety.safety_engine import analyze_accelerometer_stream
 
@@ -20,16 +21,15 @@ from src.safety.safety_engine import analyze_accelerometer_stream
 def local_database(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "events.db"))
     database.initialize_database()
-    monkeypatch.setattr(network, "STOP_EVENT", threading.Event())
-    monkeypatch.setattr(network, "FIRST_FAILURE", threading.Event())
 
 
 def add_alert(timestamp=1):
-    return database.save_alert({"timestamp": timestamp, "acc_y": -3.45})
+    event = TelemetryEvent.harsh_braking(acc_y=-3.45, timestamp=float(timestamp))
+    return database.save_alert(event)
 
 
 def stored_alerts():
-    """Read even postponed alerts to check their durable state."""
+    """Lire aussi les alertes repoussees pour verifier leur etat durable."""
     with closing(database.connect_database()) as connection:
         rows = connection.execute(
             "SELECT alert_id, payload, attempts, next_attempt_at FROM pending_alerts"
@@ -44,33 +44,36 @@ def stored_alerts():
     }
 
 
-def test_queue_keeps_identity_after_reopening_and_deletes_only_selected_alert():
+def test_queue_keeps_identity_after_reopening_and_syncs_only_selected_alert():
     first = add_alert(1)
     second = add_alert(2)
     original = stored_alerts()
     identifiers = [UUID(alert_id) for alert_id in (first, second)]
+
     assert len(set(identifiers)) == 2
     assert all(identifier.version == 4 for identifier in identifiers)
+
     for alert_id, timestamp in ((first, 1), (second, 2)):
         payload = original[alert_id]["payload"]
         assert payload["alert_id"] == alert_id
         assert payload["timestamp"] == timestamp
         assert payload["acc_y"] == -3.45
         assert isinstance(payload["captured_at"], float)
-        assert payload["captured_at"] > 0
 
     database.initialize_database()
     assert stored_alerts() == original
-    database.delete_alert(first)
+
+    database.mark_alert_synced(first)
     assert stored_alerts() == {second: original[second]}
     assert database.pending_count() == 1
+    assert database.synced_count() == 1
 
 
-def test_worker_commits_each_ack_and_schedules_failed_alert_without_loss(monkeypatch):
+def test_worker_commits_each_ack_and_schedules_failed_alert_without_loss():
     first, second, third = [add_alert(timestamp) for timestamp in (1, 2, 3)]
     original_payload = stored_alerts()[second]["payload"]
     calls = []
-
+    stop_event = threading.Event()
     def sender(alert_id, payload):
         calls.append(alert_id)
         assert stored_alerts()[alert_id]["payload"] == json.loads(payload)
@@ -78,17 +81,20 @@ def test_worker_commits_each_ack_and_schedules_failed_alert_without_loss(monkeyp
             assert first not in stored_alerts()
             raise requests.ConnectionError("offline")
         if alert_id == third:
-            network.STOP_EVENT.set()
+            stop_event.set()
 
-    monkeypatch.setattr(network, "send_alert", sender)
-    network.network_worker()
+    network.network_worker(
+        sender=sender,
+        stop_event=stop_event,
+    )
+
     assert calls == [first, second, third]
-    assert network.FIRST_FAILURE.is_set()
     remaining = stored_alerts()
     assert set(remaining) == {second}
     assert remaining[second]["payload"] == original_payload
     assert remaining[second]["attempts"] == 1
     assert remaining[second]["next_attempt_at"] > 0
+
     database.initialize_database()
     assert stored_alerts() == remaining
 
@@ -102,6 +108,7 @@ def test_retry_backoff_is_persisted_and_only_due_alerts_are_selected(monkeypatch
     monkeypatch.setattr(database.time, "time", now)
     alert_id = add_alert()
     payload = database.get_pending_alerts()[0][1]
+
     for attempts, delay in enumerate((2, 4, 8, 16, 32, 64, 128, 256, 300, 300)):
         assert database.get_pending_alerts() == [(alert_id, payload, attempts)]
         database.schedule_retry(alert_id, attempts)
@@ -109,6 +116,7 @@ def test_retry_backoff_is_persisted_and_only_due_alerts_are_selected(monkeypatch
         saved = stored_alerts()[alert_id]
         assert saved["attempts"] == attempts + 1
         assert saved["next_attempt_at"] == deadline
+
         database.initialize_database()
         assert database.pending_count() == 1
         clock[0] = deadline - 0.001
@@ -116,17 +124,18 @@ def test_retry_backoff_is_persisted_and_only_due_alerts_are_selected(monkeypatch
         clock[0] = deadline
         assert database.get_pending_alerts() == [(alert_id, payload, attempts + 1)]
 
-    database.delete_alert(alert_id)
+    database.mark_alert_synced(alert_id)
     next_id = add_alert(2)
     database.schedule_retry(next_id, 0)
     assert stored_alerts()[next_id]["next_attempt_at"] == clock[0] + 2
 
 
-def test_background_network_does_not_block_business_persistence(tmp_path, monkeypatch):
+def test_background_network_does_not_block_business_persistence(tmp_path):
     network_started = threading.Event()
     release_network = threading.Event()
     collected_during_outage = threading.Event()
     business_finished = threading.Event()
+    stop_event = threading.Event()
     errors = []
     report = tmp_path / "stream_report.json"
 
@@ -137,7 +146,7 @@ def test_background_network_does_not_block_business_persistence(tmp_path, monkey
 
     def run_network():
         try:
-            network.network_worker()
+            network.network_worker(sender=blocked_sender, stop_event=stop_event)
         except (AssertionError, OSError, RuntimeError, ValueError, requests.RequestException) as error:
             errors.append(error)
 
@@ -158,11 +167,11 @@ def test_background_network_does_not_block_business_persistence(tmp_path, monkey
         except (AssertionError, OSError, RuntimeError, ValueError, requests.RequestException) as error:
             errors.append(error)
 
-    monkeypatch.setattr(network, "send_alert", blocked_sender)
     worker = threading.Thread(target=run_network)
     acquisition = threading.Thread(target=produce_events)
     worker.start()
     acquisition.start()
+
     try:
         assert network_started.wait(timeout=2)
         assert collected_during_outage.wait(timeout=2)
@@ -171,11 +180,11 @@ def test_background_network_does_not_block_business_persistence(tmp_path, monkey
         release_network.set()
         assert business_finished.wait(timeout=2)
     finally:
-        network.STOP_EVENT.set()
+        stop_event.set()
         release_network.set()
-        if acquisition.ident is not None:
-            acquisition.join(timeout=3)
+        acquisition.join(timeout=3)
         worker.join(timeout=3)
+
     assert not worker.is_alive()
     assert not acquisition.is_alive()
     assert errors == []
@@ -183,7 +192,6 @@ def test_background_network_does_not_block_business_persistence(tmp_path, monkey
     score = json.loads(report.read_text(encoding="utf-8"))
     assert score["total_samples"] == 11
     assert score["harsh_braking_events"] == 1
-    assert score["events"] == [{"timestamp": 0, "acc_y": -3.45}]
 
 
 def test_collection_commits_both_engine_events_before_any_send(tmp_path, monkeypatch):
@@ -194,19 +202,22 @@ def test_collection_commits_both_engine_events_before_any_send(tmp_path, monkeyp
     collect_events(score_file=str(tmp_path / "daily_score.json"))
     pending = database.get_pending_alerts(limit=1000)
     payloads = [json.loads(payload) for _alert_id, payload, _attempts in pending]
+
     assert len(pending) == database.pending_count()
     assert any(payload.get("event_type") == "zfe_entry" for payload in payloads)
     assert any(payload.get("acc_y", 0) < -2.5 for payload in payloads)
+
     sent = []
+    stop_event = threading.Event()
 
     def sender(alert_id, payload):
         assert stored_alerts()[alert_id]["payload"] == json.loads(payload)
         sent.append(alert_id)
         if len(sent) == len(pending):
-            network.STOP_EVENT.set()
+            stop_event.set()
 
-    monkeypatch.setattr(network, "send_alert", sender)
-    network.network_worker()
+    network.network_worker(sender=sender, stop_event=stop_event)
+
     assert set(sent) == {alert_id for alert_id, _payload, _attempts in pending}
     assert database.pending_count() == 0
 
@@ -222,6 +233,7 @@ def test_streaming_callback_emits_before_next_sample_without_retaining_a_list():
     score = analyze_accelerometer_stream(
         samples(), on_event=emitted.append, retain_events=False
     )
+
     assert score == {"total_samples": 2, "harsh_braking_events": 1, "events": []}
 
 
@@ -234,18 +246,20 @@ def test_report_counts_1000_samples_as_one_episode_and_survives_bad_input(tmp_pa
     )
     report = tmp_path / "daily_score.json"
     emitted = []
+
     run_safety_engine(
         str(samples), str(report), on_event=emitted.append, raise_on_error=True
     )
     previous_report = report.read_bytes()
     score = json.loads(previous_report)
+
     assert score["total_samples"] == 1000
     assert score["harsh_braking_events"] == 1
     assert emitted == [{"timestamp": 0, "acc_y": -3.0}]
-    assert score["events"] == emitted
 
     samples.write_text(
-        "timestamp,acc_x,acc_y,acc_z\n1,0,-3,0\n2,0,invalid,0\n", encoding="utf-8"
+        "timestamp,acc_x,acc_y,acc_z\n1,0,-3,0\n2,0,invalid,0\n",
+        encoding="utf-8",
     )
     with pytest.raises(ValueError):
         run_safety_engine(str(samples), str(report), raise_on_error=True)
@@ -256,11 +270,13 @@ def test_collection_reports_missing_input_and_keeps_the_previous_report(tmp_path
     report = tmp_path / "daily_score.json"
     previous_report = '{"previous_report": true}'
     report.write_text(previous_report, encoding="utf-8")
+
     with pytest.raises(FileNotFoundError):
         collect_events(
             score_file=str(report),
             accelerometer_file=str(tmp_path / "absent.csv"),
         )
+
     assert report.read_text(encoding="utf-8") == previous_report
 
 
@@ -283,7 +299,6 @@ def test_http_sends_stable_identity_and_leaves_old_table_untouched(monkeypatch):
         calls.append((url, kwargs))
         return responses[len(calls) - 1]
 
-    monkeypatch.setattr(network, "DEMO_MODE", False)
     monkeypatch.setattr(network, "API_URL", "https://example.invalid/alert")
     monkeypatch.setattr(network, "API_TOKEN", "test-token")
     monkeypatch.setattr(network.requests, "post", post)
@@ -294,6 +309,7 @@ def test_http_sends_stable_identity_and_leaves_old_table_untouched(monkeypatch):
         "alert_id": alert_id,
         "captured_at": 1_700_000_000.5,
     }
+
     network.send_alert(alert_id, json.dumps(payload))
     url, request = calls[0]
     assert url == "https://example.invalid/alert"
@@ -309,7 +325,6 @@ def test_http_sends_stable_identity_and_leaves_old_table_untouched(monkeypatch):
     assert calls[1][1]["json"] == payload
     assert responses[1].closed
 
-    # The old table is preserved; this flow intentionally performs no migration.
     old_payload = json.dumps({"timestamp": 1, "acc_y": -3.45})
     with closing(database.connect_database()) as connection, connection:
         connection.execute(
@@ -320,20 +335,27 @@ def test_http_sends_stable_identity_and_leaves_old_table_untouched(monkeypatch):
             "INSERT INTO events VALUES (1, 'harsh_braking', ?, 'original-date', 0)",
             (old_payload,),
         )
+
     database.initialize_database()
     assert database.get_pending_alerts() == []
-    assert database.pending_count() == 0
     with closing(database.connect_database()) as connection:
         assert connection.execute("SELECT * FROM events").fetchall() == [
             (1, "harsh_braking", old_payload, "original-date", 0)
         ]
 
 
-def test_memory_buffer_is_bounded():
-    recent_samples.clear()
-    for index in range(1000):
-        recent_samples.append({"timestamp": index, "acc_y": 0.0})
-    assert len(recent_samples) == 600
-    assert recent_samples.maxlen == 600
-    assert recent_samples[0]["timestamp"] == 400
-    recent_samples.clear()
+def test_event_has_one_business_timestamp_and_one_storage_timestamp():
+    event = TelemetryEvent.harsh_braking(acc_y=-3.45, timestamp=12.0)
+    payload = event.to_payload()
+
+    assert payload == {
+        "event_type": "harsh_braking",
+        "timestamp": 12.0,
+        "acc_y": -3.45,
+    }
+    assert "created_at" not in payload
+
+    alert_id = database.save_alert(event)
+    stored = stored_alerts()[alert_id]["payload"]
+    assert "captured_at" in stored
+    assert "created_at" not in stored

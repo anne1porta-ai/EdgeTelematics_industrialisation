@@ -1,17 +1,29 @@
-GREENMOVE — DEMARRAGE RAPIDE DANS VS CODE
+EDGE TELEMATICS — DEMARRAGE DANS VS CODE
 
-1. Ouvrir le dossier du projet dans VS Code.
-2. Lancer INSTALLER.bat une seule fois pour creer .venv.
-3. Lancer LANCER_DEMO_CRISE.bat pour la demo de resilience.
-4. Lancer LANCER_TESTS_CRISE.bat pour les 6 preuves liees au pilote.
-5. Lancer LANCER_TESTS.bat pour toute la suite pytest.
-6. Lancer LANCER_LIVRAISON.bat pour le build et le staging locaux.
-7. Les workflows GitHub sont dans .github/workflows/.
+1. Ouvrir ce dossier dans VS Code.
+2. Ouvrir Terminal > New Terminal.
+3. Lancer une seule fois :
 
-FICHIERS A MONTRER A L'ORAL
-- run_bloc3_demo.py : scenario de panne et reprise.
-- src/storage/event_repository.py : SQLite et historique synced=1.
-- src/sync/sync_service.py : envoi, timeout et backoff.
-- tests/bloc3/test_crisis_regression.py : preuves automatiques.
-- .github/workflows/bloc3-ci.yml : CI, signature et staging.
-- .github/workflows/promote-demo.yml : promotion du meme artefact.
+   .\INSTALLER.bat
+
+4. Demonstration de resilience :
+
+   .\LANCER_DEMO_CRISE.bat
+
+5. Six tests lies a la crise :
+
+   .\LANCER_TESTS_CRISE.bat
+
+6. Tous les tests :
+
+   .\LANCER_TESTS.bat
+
+7. Demonstration locale de la chaine CI/CD :
+
+   .\DEMO_CI_CD.cmd
+
+8. Build et staging seuls :
+
+   .\LANCER_LIVRAISON.bat
+
+Les mesures sont traitees une par une. Seules les alertes critiques sont conservees dans SQLite.

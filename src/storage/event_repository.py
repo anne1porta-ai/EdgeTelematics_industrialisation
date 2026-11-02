@@ -48,21 +48,11 @@ def initialize_database() -> None:
         connection.commit()
 
 
-def _normalise_payload(event: TelemetryEvent | dict[str, Any]) -> dict[str, Any]:
-    """Accepter le modele metier ou un dictionnaire historique."""
-    if isinstance(event, TelemetryEvent):
-        return event.to_payload()
-
-    payload = dict(event)
-    payload.setdefault("event_type", "harsh_braking")
-    return payload
-
-
-def save_alert(event: TelemetryEvent | dict[str, Any]) -> str:
-    """Creer l'identite une fois et enregistrer avant tout appel HTTP."""
+def save_alert(event: TelemetryEvent) -> str:
+    """Donner un identifiant a l'alerte et la stocker avant le reseau."""
     alert_id = str(uuid.uuid4())
     captured_at = time.time()
-    payload = _normalise_payload(event)
+    payload = event.to_payload()
     payload["alert_id"] = alert_id
     payload["captured_at"] = captured_at
 
@@ -91,7 +81,11 @@ def get_pending_alerts(limit: int = 20) -> list[tuple[str, str, int]]:
             """,
             (time.time(), limit),
         ).fetchall()
-    return [(str(alert_id), str(payload), int(attempts)) for alert_id, payload, attempts in rows]
+
+    return [
+        (str(alert_id), str(payload), int(attempts))
+        for alert_id, payload, attempts in rows
+    ]
 
 
 def schedule_retry(alert_id: str, attempts: int) -> int:
@@ -109,6 +103,7 @@ def schedule_retry(alert_id: str, attempts: int) -> int:
             (next_attempt, next_attempt_at, alert_id),
         )
         connection.commit()
+
     return delay
 
 
@@ -127,7 +122,7 @@ def mark_alert_synced(alert_id: str) -> bool:
         if row is None:
             return False
 
-        payload_text, created_at = row
+        payload_text, captured_at = row
         payload = json.loads(payload_text)
         event_type = str(payload.get("event_type", "unknown"))
 
@@ -143,18 +138,14 @@ def mark_alert_synced(alert_id: str) -> bool:
             )
             VALUES (?, ?, ?, ?, 1, ?)
             """,
-            (alert_id, event_type, payload_text, created_at, time.time()),
+            (alert_id, event_type, payload_text, captured_at, time.time()),
         )
         connection.execute(
             "DELETE FROM pending_alerts WHERE alert_id = ?",
             (alert_id,),
         )
+
     return True
-
-
-def delete_alert(alert_id: str) -> None:
-    """Compatibilite : archiver l'alerte puis la retirer de la file."""
-    mark_alert_synced(alert_id)
 
 
 def pending_count() -> int:
@@ -192,9 +183,9 @@ def get_synced_events(limit: int = 100) -> list[dict[str, Any]]:
             "alert_id": str(alert_id),
             "event_type": str(event_type),
             "payload": json.loads(payload),
-            "created_at": float(created_at),
+            "captured_at": float(captured_at),
             "synced": 1,
             "synced_at": float(synced_at),
         }
-        for alert_id, event_type, payload, created_at, synced_at in rows
+        for alert_id, event_type, payload, captured_at, synced_at in rows
     ]

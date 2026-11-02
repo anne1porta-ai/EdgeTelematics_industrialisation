@@ -141,6 +141,7 @@ jobs:
   build:
     name: Build OTA - paquet, hash et signature
     needs: [quality, tests, security]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     steps:

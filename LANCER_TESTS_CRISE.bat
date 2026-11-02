@@ -11,7 +11,7 @@ if exist ".venv\Scripts\python.exe" (
     python -m pytest -v tests\bloc3\test_crisis_regression.py
 )
 echo.
-echo Ces tests couvrent : memoire, decouplage reseau, SQLite,
-echo retry/backoff, ACK/purge, HTTPS-idempotence-timeout.
+echo Ces tests couvrent : traitement en flux, decouplage reseau,
+echo SQLite, retry/backoff, archivage, HTTPS-idempotence-timeout.
 echo.
 pause

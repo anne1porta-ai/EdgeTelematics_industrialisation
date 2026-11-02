@@ -1,87 +1,62 @@
-# Démontrer la chaîne CI/CD et la promotion OTA
+# Démontrer la chaîne CI/CD
 
-## 1. Push et CI
+Le projet fabrique un paquet, l'exécute en staging simulé, puis permet de promouvoir **ce même paquet** après un lancement manuel. La collecte Safety, SQLite et l'envoi dans leur thread existant servent de scénario de validation.
 
-```powershell
-git add .
-git commit -m "Update EdgeTelematics POC"
-git push origin main
+## 1. Les étapes et les sources
+
+| Étape | Ce que la démo fait | Source |
+|---|---|---|
+| Qualité | Ruff contrôle le code ; mypy recherche les erreurs de types. | `.github/workflows/bloc3-ci.yml` |
+| Tests | pytest exécute les tests et produit un rapport JUnit. | `.github/workflows/bloc3-ci.yml`, `tests/` |
+| Sécurité | Bandit analyse Python, pip-audit audite les dépendances applicatives, Gitleaks recherche les secrets dans l'historique Git. | `.github/workflows/bloc3-ci.yml` |
+| Build | Le ZIP contient les sources et les données du projet. Un manifeste associe version, commit et SHA-256. | `scripts/build_package.py` |
+| Staging | Vérifier le SHA-256, extraire le ZIP, exécuter sa démo, simuler un échec avec rollback puis une installation réussie. | `scripts/staging_demo.py` |
+| Go manuel | Choisir une exécution CI réussie et reprendre son paquet validé, sans le reconstruire. | `.github/workflows/promote-demo.yml` |
+| Installation simulée | Vérifier le paquet puis écrire la version et le statut dans des fichiers JSON. | `src/ota/check_manifest.py`, `src/ota/simulate_update.py` |
+
+La qualité, les tests et la sécurité doivent tous réussir avant le build. Le paquet n'est marqué comme validé qu'après la réussite du staging.
+
+## 2. Montrer le résultat en local
+
+Sous Windows, lancer `INSTALLER.bat` une fois, puis **`LANCER_LIVRAISON.bat`**. Ce second lanceur démontre le build et le staging ; les contrôles CI complets sont dans le workflow GitHub.
+
+Dans un terminal avec les dépendances du projet installées, les mêmes étapes sont :
+
+```bash
+python -m scripts.build_package --version demo-local
+python -m scripts.staging_demo --manifest dist/manifest.json --output-dir staging
 ```
 
-Dans GitHub, ouvrir **Actions → Bloc 3 CI**.
+Ce qui doit apparaître :
 
-La chaîne exécute :
+1. `dist/greenmove.zip` et `dist/manifest.json` sont créés.
+2. Le code extrait du paquet traite **160 mesures**, détecte **1 freinage** et termine avec **0 alerte en attente et 1 alerte synchronisee**, après la coupure et la reprise réseau simulées.
+3. L'échec d'installation volontaire conserve la version `2.2.0` : statut `rolled_back`.
+4. L'installation suivante réussit : la version devient `demo-local` et le checksum reste celui du paquet construit.
 
-```text
-Qualité : Ruff + mypy
-Tests   : pytest + rapport JUnit
-Sécurité: Bandit + pip-audit + Gitleaks
-Build   : greenmove.zip + manifest.json
-Intégrité: SHA-256
-Signature: clé privée GitHub Secret
-Staging : même paquet, rollback puis installation réussie
-```
+Le bilan est dans `staging/report.json` ; le déroulé de la collecte dans `staging/demo.log`. Chaque essai conserve ses fichiers dans un sous-dossier `staging/essai-...`.
 
-## 2. Artefacts du run vert
+Le code de sortie 1 du simulateur pendant l'échec volontaire est attendu : `staging_demo.py` vérifie cet échec et poursuit le scénario. Un échec inattendu bloque le staging.
 
-Le résumé du run doit contenir :
+## 3. Utiliser les deux workflows sur GitHub
 
-```text
-greenmove-pytest-report
-greenmove-security-reports
-greenmove-build-signed
-greenmove-staging-report
-greenmove-validated-package
-```
+1. Placer les fichiers du projet, y compris `.github/workflows`, dans le dépôt GitHub.
+2. Un push ou une Pull Request lance **Bloc 3 CI**. On peut aussi le lancer manuellement.
+3. Ouvrir une exécution terminée avec succès. Ses artifacts contiennent les rapports et **`greenmove-validated-package`**.
+4. Copier l'identifiant numérique situé à la fin de son URL : `.../actions/runs/123456789` donne `123456789`. Ce n'est pas le numéro d'affichage de l'exécution.
+5. Dans **Actions → Promotion manuelle - demonstration → Run workflow**, saisir cet identifiant dans `source_run_id`, puis lancer.
+6. Le second workflow vérifie l'origine et le succès du run, télécharge son paquet validé et simule sa promotion. Il conserve **`greenmove-promotion-status`** et **`greenmove-promoted-package`**.
 
-`greenmove-validated-package` est le paquet autorisé à passer à l'étape suivante.
+Le bouton manuel nécessite que `promote-demo.yml` soit présent sur la branche par défaut et que l'utilisateur ait un accès en écriture au dépôt. Le lancement représente le **Go humain du POC** ; aucun rôle spécifique de CTO n'est imposé. Les artifacts sont conservés 30 jours.
 
-## 3. Retrouver le run ID
+Référence GitHub : [lancer un workflow manuellement](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 
-Ouvrir le run vert. Dans l'URL :
+## 4. Ce qui est réel et ce qui est simulé
 
-```text
-.../actions/runs/41341041958
-```
+**Réel :** contrôles du code, tests, fabrication du ZIP, SHA-256, exécution des sources extraites, persistance SQLite et réutilisation du paquet entre les étapes.
 
-le run ID est `41341041958`.
+**Simulé :** capteurs, coupure 4G, réception distante, installation sur une tablette et rollback. L'état OTA est un fichier JSON créé sur le runner ; chaque runner repart d'un état local neuf.
 
-## 4. Promotion
+Cette démo ne réalise pas le test longue durée de huit heures sur une tablette Zebra, une signature cryptographique de production ou un déploiement progressif sur une flotte. Le SHA-256 contrôle l'intégrité du paquet par rapport au manifeste ; il ne constitue pas une signature. L'ancien exemple `src/ota/manifest.json` avec `demo_signature` reste disponible pour les tests historiques ; la nouvelle chaîne utilise **`dist/manifest.json`**.
 
-Ouvrir :
-
-```text
-Actions
-→ Promotion OTA - Demo
-→ Run workflow
-```
-
-Coller le run ID dans `source_run_id`.
-
-La promotion :
-
-1. vérifie que le run source est vert ;
-2. vérifie que `greenmove-validated-package` existe ;
-3. télécharge ce même artefact ;
-4. revérifie SHA-256 et signature ;
-5. confirme `Reconstruction : NON` ;
-6. simule les vagues OTA et le rollback N-1.
-
-## 5. Ce qui est démontré
-
-```text
-ZIP testé = ZIP signé = ZIP stagé = ZIP promu
-```
-
-Un seuil rouge sur la vague multi-pays provoque :
-
-```text
-NO-GO
-→ campagne gelée
-→ N-1 redevient la cible
-→ vérification capteurs / mémoire / SQLite / télémétrie
-```
-
-## 6. Ce qui reste terrain
-
-La Zebra réelle, la zone blanche radio, le reboot matériel, l'espace disque insuffisant, l'endurance 8 h et la flotte réelle restent des validations terrain.
+Les validations locales effectuées sont consignées dans `VALIDATION.txt`. Les workflows sont fournis prêts à être exécutés dans le dépôt ; aucune exécution GitHub n'est déclarée comme réalisée lors de cette livraison.

@@ -1,124 +1,146 @@
-# Bloc 3 — fonctionnement technique
+# Bloc 3 — Industrialisation du POC Edge
 
-## 1. Correction des deux causes de crise
+## Objectif
 
-Le code initial avait deux défauts : une liste mémoire non bornée et un appel réseau dans la boucle capteur.
+Le pilote a révélé deux causes principales :
 
-La version actuelle sépare trois responsabilités :
+- les mesures étaient accumulées dans une liste globale ;
+- l'appel réseau était exécuté dans la boucle de collecte.
+
+La correction conserve Python et sépare trois responsabilités :
 
 ```text
-collecte capteur
-→ stockage SQLite
-→ worker réseau
+collecte en flux -> SQLite -> worker réseau
 ```
 
-La collecte ne fait aucun appel HTTP.
+## 1. Collecte sans accumulation en mémoire
 
-## 2. Mémoire bornée
+`run_demo.py` transmet les mesures au moteur Safety une par une.
 
-`run_demo.py` utilise :
+```text
+lecture d'une mesure
+-> analyse
+-> alerte éventuelle
+-> mesure oubliée
+```
+
+Aucun historique de mesures n'est conservé en RAM. Seules les alertes utiles sont enregistrées dans SQLite.
+
+Le mode stress traite 1 000 mesures avec :
+
+```powershell
+python run_demo.py --stress
+```
+
+## 2. Evénements métier
+
+`src/domain/telemetry_event.py` définit un modèle simple :
 
 ```python
-recent_samples = deque(maxlen=600)
+@dataclass(frozen=True)
+class TelemetryEvent:
+    event_type: str
+    payload: dict[str, Any]
 ```
 
-Même après 1 000 mesures, la RAM conserve au maximum 600 échantillons récents. Les alertes importantes sont, elles, écrites dans SQLite.
-
-## 3. Événements métier
-
-`TelemetryEvent` définit deux types simples :
+Deux types sont utilisés :
 
 - `harsh_braking` ;
 - `zfe_entry`.
 
-Chaque alerte reçoit un UUID stable lors de son premier enregistrement.
+Le `timestamp` vient du capteur. SQLite ajoute ensuite `captured_at`, l'heure de l'enregistrement local.
 
-## 4. SQLite et historique
+## 3. Store-and-Forward SQLite
 
 `src/storage/event_repository.py` fournit :
 
 | Fonction | Rôle |
 |---|---|
-| `initialize_database()` | Créer `pending_alerts` et `event_history`. |
-| `save_alert()` | Écrire l'alerte avant tout appel réseau. |
+| `initialize_database()` | Créer la file et l'historique. |
+| `save_alert(event)` | Enregistrer un `TelemetryEvent` avant le réseau. |
 | `get_pending_alerts()` | Lire les alertes prêtes à être envoyées. |
-| `schedule_retry()` | Enregistrer le prochain essai. |
-| `mark_alert_synced()` | Archiver avec `synced=1`, puis retirer de la file active. |
-| `pending_count()` | Compter la file active. |
-| `synced_count()` | Compter l'historique synchronisé. |
+| `schedule_retry()` | Enregistrer le prochain essai : 2, 4, 8 secondes... |
+| `mark_alert_synced()` | Archiver après succès puis retirer de la file active. |
 
-SQLite est configuré en mode WAL.
+L'UUID est créé une seule fois et réutilisé pendant les retries.
 
-## 5. Worker réseau
+## 4. Worker réseau
 
-`src/sync/sync_service.py` applique une logique directe :
+`src/sync/sync_service.py` contient uniquement le mécanisme réel :
 
 ```text
-lire une alerte
-→ tenter l'envoi
-→ échec : conserver et programmer un retry
-→ succès : archiver avec synced=1
+lire SQLite
+-> envoyer
+-> échec : programmer un retry
+-> succès : archiver
 ```
 
-Les délais sont `2 s, 4 s, 8 s...`, plafonnés à 300 secondes.
+La panne simulée n'est plus dans ce fichier. Elle est définie dans `run_bloc3_demo.py` puis injectée au worker avec une fonction `sender`.
 
-Le client HTTP utilise :
+L'appel HTTP réel utilise :
 
-- `Authorization: Bearer ...` ;
+- `Authorization` ;
 - `Idempotency-Key` ;
 - `timeout=(3, 10)`.
 
 Il n'y a pas de circuit breaker dans ce POC.
 
-## 6. Démonstration de crise
+## 5. Démonstration de crise
 
-`run_bloc3_demo.py` traite 160 mesures :
+Lancer :
 
-1. 1 000 mesures sont injectées dans le buffer pour prouver la limite `600/600` ;
-2. la 4G est coupée ;
-3. Safety détecte un freinage et le stocke ;
-4. le worker affiche les retries `2 s, 4 s, 8 s` ;
-5. la collecte continue ;
-6. la 4G revient ;
-7. l'alerte est archivée après succès ;
-8. une API locale démontre le timeout puis l'idempotence.
-
-Résultat attendu :
-
-```text
-160 mesures
-1 freinage
-0 alerte en attente
-1 alerte historisée avec synced=1
+```powershell
+.\LANCER_DEMO_CRISE.bat
 ```
 
-## 7. Tests
+La démonstration montre :
+
+1. 10 000 mesures traitées en flux, sans historique RAM ;
+2. un freinage enregistré dans SQLite ;
+3. une coupure 4G pendant laquelle la collecte continue ;
+4. le backoff 2 s, 4 s, 8 s ;
+5. le retour du réseau ;
+6. l'archivage après succès ;
+7. un timeout HTTP réel ;
+8. l'idempotence `STORED` puis `DUPLICATE`.
+
+Bilan attendu :
+
+```text
+160 mesures de la séquence réseau
+1 freinage
+0 alerte en attente
+1 alerte synchronisée dans l'historique
+```
+
+## 6. Tests de crise
 
 ```powershell
 .\LANCER_TESTS_CRISE.bat
+```
+
+Les six preuves sont :
+
+- pas d'accumulation des mesures ;
+- aucun appel réseau dans la collecte ;
+- persistance avant envoi ;
+- conservation et retry après échec ;
+- archivage après succès ;
+- HTTPS, authentification, idempotence et timeout.
+
+Suite complète :
+
+```powershell
 .\LANCER_TESTS.bat
 ```
 
-Les tests de crise prouvent notamment : mémoire bornée, découplage réseau, persistance avant envoi, conservation après échec, purge après succès, HTTPS, authentification, idempotence et timeout.
+## 7. CI/CD et OTA
 
-## 8. OTA
-
-Le paquet historique `src/ota/packages/greenmove-2.3.0.pkg` est conservé pour les tests pédagogiques.
-
-La chaîne GitHub construit en plus un ZIP, calcule son SHA-256, le signe avec une clé privée stockée dans GitHub Secrets et vérifie la signature avec `keys/ota_public.pem`.
-
-Le staging exécute le code extrait du ZIP, vérifie le scénario `160 / 1 / 0 / 1`, simule un échec avec rollback, puis installe le même paquet avec succès.
-
-## 9. Promotion
-
-Une promotion ne reconstruit rien. Le workflow manuel récupère `greenmove-validated-package` depuis un run CI vert, revérifie hash et signature, puis simule :
+Le workflow GitHub exécute :
 
 ```text
-10 interne
-→ 50 pilote
-→ 250
-→ 1 000
-→ NO-GO
-→ gel
-→ rollback N-1
+Ruff -> mypy -> pytest -> Bandit -> pip-audit -> Gitleaks
+-> build -> SHA-256 -> signature -> staging
 ```
+
+Le même artefact validé est ensuite récupéré par le workflow manuel de promotion, sans reconstruction.
