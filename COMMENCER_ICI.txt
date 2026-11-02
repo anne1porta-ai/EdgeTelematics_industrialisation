@@ -10,7 +10,7 @@ EDGE TELEMATICS — DEMARRAGE DANS VS CODE
 
    .\LANCER_DEMO_CRISE.bat
 
-5. Six tests lies a la crise :
+5. Tests de resilience et circuit breaker :
 
    .\LANCER_TESTS_CRISE.bat
 

@@ -18,6 +18,7 @@ from src.safety.safety_engine import (
     analyze_accelerometer_stream,
     iter_accelerometer_data,
 )
+from src.sync.circuit_breaker import CLOSED, CircuitBreaker
 
 WIDTH = 72
 RESET = "\033[0m"
@@ -70,6 +71,7 @@ def demonstrate_streaming() -> None:
 def sensor_samples(
     network_available: threading.Event,
     stop_event: threading.Event,
+    breaker: CircuitBreaker,
 ):
     """Lire 160 mesures a 10 Hz pendant la panne puis la reprise."""
     readings = iter_accelerometer_data(INPUT_FILE)
@@ -84,7 +86,13 @@ def sensor_samples(
             line("Reseau 4G", colored("✅ RETABLI", GREEN))
             line("Collecte capteurs", colored("✅ TOUJOURS ACTIVE", GREEN))
             line("Alertes conservees", database.pending_count())
-            print(colored("\nLe worker reprend maintenant l'envoi.", GREEN))
+            line("Circuit reseau", colored(breaker.state, YELLOW))
+            print(
+                colored(
+                    "\nLe circuit attend sa sonde avant de reprendre l'envoi.",
+                    GREEN,
+                )
+            )
 
         sample = next(readings, {"timestamp": time.time(), "acc_y": 0.0})
         yield sample
@@ -97,15 +105,15 @@ def sensor_samples(
             )
             print(
                 f"{colored('📈 COLLECTE', CYAN)} {number:3d} mesures | "
-                f"4G {state} | historique RAM 0 | "
+                f"4G {state} | Circuit {breaker.state} | "
                 f"SQLite {database.pending_count()}"
             )
 
         stop_event.wait(0.1)
 
 
-def demonstrate_network_outage(folder: Path) -> None:
-    """Montrer Store-and-Forward et backoff sans polluer le code metier."""
+def demonstrate_network_outage(folder: Path) -> CircuitBreaker:
+    """Montrer Store-and-Forward, backoff et circuit breaker."""
     section(2, "⚠️  PANNE 4G + STORE-AND-FORWARD", RED)
     database.DB_PATH = str(folder / "events.sqlite")
     database.MAX_RETRY_DELAY = 300
@@ -113,6 +121,7 @@ def demonstrate_network_outage(folder: Path) -> None:
 
     network_available = threading.Event()
     stop_event = threading.Event()
+    breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=5.0)
 
     def demo_sender(alert_id: str, _payload: str) -> None:
         if not network_available.is_set():
@@ -124,13 +133,16 @@ def demonstrate_network_outage(folder: Path) -> None:
     line("Alertes SQLite", "0")
     print(colored("\n💾 Le freinage est stocke avant l'envoi.", YELLOW))
     print(colored("🔁 Le worker attend 2 s, puis 4 s, puis 8 s.", YELLOW))
+    print(colored("🛑 Apres 3 echecs, le circuit suspend les appels 5 s.", YELLOW))
     print(colored("📈 La collecte continue sans historique RAM.", GREEN))
+    line("Circuit initial", colored(breaker.state, GREEN))
 
     worker = threading.Thread(
         target=network.network_worker,
         kwargs={
             "sender": demo_sender,
             "stop_event": stop_event,
+            "circuit_breaker": breaker,
         },
         name="network-worker",
     )
@@ -139,11 +151,13 @@ def demonstrate_network_outage(folder: Path) -> None:
     try:
         acquisition_loop(
             output_file=str(folder / "daily_score.json"),
-            samples=sensor_samples(network_available, stop_event),
+            samples=sensor_samples(network_available, stop_event, breaker),
         )
     finally:
         stop_event.set()
         worker.join()
+
+    return breaker
 
 
 class DemoApiHandler(BaseHTTPRequestHandler):
@@ -242,7 +256,7 @@ def demonstrate_http() -> None:
         server.server_close()
 
 
-def show_final_report() -> None:
+def show_final_report(breaker: CircuitBreaker) -> None:
     section(6, "📊 TELEMETRIE FINALE", MAGENTA)
     line("Version demo", "POC-resilience")
     line("Historique de mesures en RAM", colored("0", GREEN))
@@ -251,6 +265,7 @@ def show_final_report() -> None:
     line("Collecte", colored("ACTIVE / NON BLOQUEE", GREEN))
     line("Dernier test HTTP", colored("OK", GREEN))
     line("Idempotence serveur", colored("OK - 1 stockage pour 2 envois", GREEN))
+    line("Circuit breaker final", colored(breaker.state, GREEN))
 
     section(7, "🏁 BILAN", MAGENTA)
     line("Traitement en flux", colored("✅ OUI", GREEN))
@@ -259,6 +274,14 @@ def show_final_report() -> None:
     line("Alerte conservee hors ligne", colored("✅ OUI", GREEN))
     line("Aucune alerte perdue", colored("✅ OUI", GREEN))
     line("Backoff observe", colored("✅ 2 s → 4 s → 8 s", GREEN))
+    line(
+        "Circuit ouvert apres 3 echecs",
+        colored("✅ OUI" if breaker.has_opened else "❌ NON", GREEN),
+    )
+    line(
+        "Circuit referme apres reprise",
+        colored("✅ OUI" if breaker.state == CLOSED else "❌ NON", GREEN),
+    )
     line("Timeout HTTP", colored("✅ DEMONTRE", GREEN))
     line("Idempotence", colored("✅ DEMONTREE", GREEN))
     line("Archivage apres succes", colored("✅ OUI", GREEN))
@@ -269,6 +292,7 @@ def show_final_report() -> None:
     print(colored("✅ CONCLUSION", BOLD + GREEN))
     print("Les mesures sont traitees une par une et ne s'accumulent pas.")
     print("Seules les alertes critiques sont conservees dans SQLite.")
+    print("Le circuit breaker suspend les appels pendant une panne durable.")
     print(colored("-" * WIDTH, CYAN))
 
 
@@ -287,11 +311,11 @@ def demonstrate(folder: Path) -> None:
 
     demonstrate_streaming()
     pause("simuler maintenant la coupure 4G")
-    demonstrate_network_outage(folder)
+    breaker = demonstrate_network_outage(folder)
     pause("tester maintenant le timeout HTTP reel")
     demonstrate_http()
     pause("afficher la telemetrie et le bilan final")
-    show_final_report()
+    show_final_report(breaker)
 
 
 def main() -> None:

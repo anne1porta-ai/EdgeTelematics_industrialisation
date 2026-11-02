@@ -25,6 +25,7 @@
 - SQLite WAL ;
 - Store-and-Forward ;
 - backoff 2, 4, 8 secondes ;
+- circuit breaker CLOSED / OPEN / HALF_OPEN ;
 - timeout HTTP ;
 - idempotence ;
 - historique `synced=1` ;
@@ -50,3 +51,12 @@ backoff 2 s -> 4 s -> 8 s
 0 alerte en attente
 1 alerte archivée
 ```
+
+## Circuit breaker ajouté
+
+- ouverture après 3 échecs réseau consécutifs ;
+- suspension des appels pendant 5 secondes dans la démo ;
+- une seule sonde en état HALF_OPEN ;
+- fermeture après succès ;
+- réouverture si la sonde échoue ;
+- collecte et stockage SQLite inchangés pendant l'ouverture.

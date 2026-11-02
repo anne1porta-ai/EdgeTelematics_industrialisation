@@ -2,16 +2,17 @@
 chcp 65001 >nul
 cls
 echo ================================================================
-echo        GREENMOVE - 6 TESTS DE NON-REGRESSION DE CRISE
+echo     GREENMOVE - TESTS DE RESILIENCE ET CIRCUIT BREAKER
 echo ================================================================
 echo.
 if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" -m pytest -v tests\bloc3\test_crisis_regression.py
+    ".venv\Scripts\python.exe" -m pytest -v tests\bloc3\test_crisis_regression.py tests\bloc3\test_circuit_breaker.py
 ) else (
-    python -m pytest -v tests\bloc3\test_crisis_regression.py
+    python -m pytest -v tests\bloc3\test_crisis_regression.py tests\bloc3\test_circuit_breaker.py
 )
 echo.
 echo Ces tests couvrent : traitement en flux, decouplage reseau,
-echo SQLite, retry/backoff, archivage, HTTPS-idempotence-timeout.
+echo SQLite, retry/backoff, circuit breaker, archivage,
+echo HTTPS, idempotence et timeout.
 echo.
 pause

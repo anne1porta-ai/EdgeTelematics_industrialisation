@@ -7,6 +7,8 @@ Fonctionnalites attendues :
 - SQLite avant envoi ;
 - worker reseau separe ;
 - backoff 2 s / 4 s / 8 s ;
+- circuit breaker apres 3 echecs ;
+- etats CLOSED / OPEN / HALF_OPEN ;
 - timeout HTTP ;
 - idempotence ;
 - archivage synced=1 apres succes ;
@@ -27,5 +29,8 @@ Resultat fonctionnel attendu de la demo :
 - 1 freinage ;
 - 0 alerte en attente ;
 - 1 alerte dans event_history ;
+- circuit ouvert pendant la panne puis referme apres reprise ;
 - timeout declenche ;
 - 1 stockage pour 2 envois identiques.
+
+Resultat de la suite automatisee : 55 tests reussis.

@@ -83,7 +83,19 @@ L'appel HTTP réel utilise :
 - `Idempotency-Key` ;
 - `timeout=(3, 10)`.
 
-Il n'y a pas de circuit breaker dans ce POC.
+Le worker utilise aussi un circuit breaker simple :
+
+```text
+CLOSED
+-> 3 échecs consécutifs
+-> OPEN : appels suspendus
+-> délai de reprise
+-> HALF_OPEN : une sonde
+-> succès : CLOSED
+-> échec : OPEN
+```
+
+Le backoff et le circuit breaker ont deux rôles différents : le backoff espace les retries d'une alerte ; le circuit breaker protège l'ensemble des appels réseau.
 
 ## 5. Démonstration de crise
 
@@ -99,10 +111,13 @@ La démonstration montre :
 2. un freinage enregistré dans SQLite ;
 3. une coupure 4G pendant laquelle la collecte continue ;
 4. le backoff 2 s, 4 s, 8 s ;
-5. le retour du réseau ;
-6. l'archivage après succès ;
-7. un timeout HTTP réel ;
-8. l'idempotence `STORED` puis `DUPLICATE`.
+5. l'ouverture du circuit après 3 échecs ;
+6. la suspension temporaire des appels ;
+7. le passage HALF_OPEN au retour du réseau ;
+8. la fermeture du circuit après succès ;
+9. l'archivage après succès ;
+10. un timeout HTTP réel ;
+11. l'idempotence `STORED` puis `DUPLICATE`.
 
 Bilan attendu :
 
@@ -119,14 +134,18 @@ Bilan attendu :
 .\LANCER_TESTS_CRISE.bat
 ```
 
-Les six preuves sont :
+Les tests ciblés vérifient :
 
 - pas d'accumulation des mesures ;
 - aucun appel réseau dans la collecte ;
 - persistance avant envoi ;
 - conservation et retry après échec ;
 - archivage après succès ;
-- HTTPS, authentification, idempotence et timeout.
+- HTTPS, authentification, idempotence et timeout ;
+- ouverture du circuit au seuil ;
+- blocage des appels en état OPEN ;
+- sonde HALF_OPEN ;
+- fermeture ou réouverture selon le résultat de la sonde.
 
 Suite complète :
 
