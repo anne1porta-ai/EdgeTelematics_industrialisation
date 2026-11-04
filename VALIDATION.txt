@@ -1,0 +1,57 @@
+VALIDATION DU PROJET BLOC 3
+===========================
+
+OBJECTIF
+--------
+Vérifier que la collecte reste locale, que les événements survivent à une panne
+réseau et qu'une version suit une chaîne de déploiement contrôlée.
+
+COMMANDES À EXÉCUTER
+--------------------
+1. Tests :
+   py lancer.py tests
+   Attendu : 55 tests réussis.
+
+2. Démonstration standard :
+   py lancer.py demo
+   Attendu : 1 entrée ZFE et 1 freinage.
+
+3. Mode stress :
+   py lancer.py stress
+   Attendu : 1 000 mesures traitées en flux et 1 freinage.
+
+4. Résilience :
+   py lancer.py resilience
+   Attendu : collecte active pendant la panne, événement conservé dans SQLite,
+   circuit ouvert puis refermé, 0 événement en attente et 1 événement archivé.
+
+5. Build :
+   py lancer.py build --version demo-local
+   Attendu : dist/greenmove.zip et dist/manifest.json.
+
+6. Staging :
+   py lancer.py staging
+   Attendu : checksum valide, rollback simulé puis installation réussie.
+
+7. Rollout OTA :
+   py lancer.py ota --mode rollout
+   Attendu : déploiement par vagues et retour N-1 lorsque le seuil de stabilité
+   n'est plus respecté.
+
+FONCTIONNALITÉS VÉRIFIÉES
+-------------------------
+- traitement en flux ;
+- moteurs GEO et Safety ;
+- SQLite avant le réseau ;
+- backoff 2 s / 4 s / 8 s ;
+- circuit breaker CLOSED / OPEN / HALF_OPEN ;
+- timeout HTTP ;
+- idempotence ;
+- archivage après succès ;
+- build, SHA-256, signature CI, staging, promotion et rollback OTA.
+
+PÉRIMÈTRE
+---------
+La coupure réseau, l'API distante, l'installation Android, le MDM et le rollout
+sur une flotte réelle sont simulés. Les mécanismes logiciels et les fichiers
+produits sont exécutés réellement dans le projet.

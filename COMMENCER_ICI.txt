@@ -1,0 +1,59 @@
+EDGE TELEMATICS — COMMENCER ICI
+================================
+
+Ce fichier donne le chemin le plus court pour vérifier le projet Bloc 3.
+Un terminal suffit ; VS Code reste facultatif.
+
+PRÉREQUIS
+---------
+- Python 3.10 ou plus récent
+- pip
+
+INSTALLER LES DÉPENDANCES
+-------------------------
+Windows PowerShell :
+    py -m pip install -r requirements.txt
+
+Linux / macOS :
+    python3 -m pip install -r requirements.txt
+
+COMMANDES PRINCIPALES
+---------------------
+1. Vérifier les moteurs GEO et Safety :
+    py lancer.py demo
+
+2. Vérifier le traitement de 1 000 mesures :
+    py lancer.py stress
+
+3. Démontrer la résilience à une coupure réseau :
+    py lancer.py resilience
+
+4. Exécuter les 55 tests :
+    py lancer.py tests
+
+5. Construire puis valider le paquet OTA :
+    py lancer.py build --version demo-local
+    py lancer.py staging
+
+6. Simuler un déploiement progressif et un rollback :
+    py lancer.py ota --mode rollout
+
+Sous Linux ou macOS, remplacer « py » par « python3 ».
+
+RÉSULTATS ATTENDUS
+------------------
+- 55 tests réussis ;
+- 1 entrée ZFE et 1 freinage dans la démonstration standard ;
+- collecte toujours active pendant la panne réseau ;
+- événement conservé dans SQLite, puis synchronisé après la reprise ;
+- circuit breaker ouvert pendant la panne puis refermé ;
+- paquet construit, vérifié et testé en staging ;
+- rollback simulé en cas de déploiement instable.
+
+POUR COMPRENDRE LE PROJET
+-------------------------
+- README.md : vue d'ensemble et commandes ;
+- README_BLOC3.md : preuves d'industrialisation ;
+- README_RESILIENCE.md : coupure réseau et reprise ;
+- README_DEPLOIEMENT.md : CI/CD, OTA et rollback ;
+- VALIDATION.txt : liste courte des vérifications finales.
