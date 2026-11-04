@@ -1,7 +1,12 @@
 @echo off
 cd /d "%~dp0"
-".venv\Scripts\python.exe" -m scripts.build_package --version demo-local
+if exist ".venv\Scripts\python.exe" (
+    set "PY=.venv\Scripts\python.exe"
+) else (
+    set "PY=python"
+)
+%PY% lancer.py build --version demo-local
 if errorlevel 1 goto fin
-".venv\Scripts\python.exe" -m scripts.staging_demo
+%PY% lancer.py staging
 :fin
 pause

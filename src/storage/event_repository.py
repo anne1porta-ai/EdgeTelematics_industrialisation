@@ -1,26 +1,43 @@
-"""File SQLite persistante et historique des alertes synchronisees."""
+"""Conserver les alertes localement avant leur envoi au serveur."""
 
 import json
 import sqlite3
 import time
 import uuid
-from contextlib import closing
-from typing import Any
+from pathlib import Path
 
-from src.domain.telemetry_event import TelemetryEvent
-
-DB_PATH = "greenmove.db"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DB_PATH = str(PROJECT_ROOT / "greenmove.db")
 MAX_RETRY_DELAY = 300
 
 
-def connect_database() -> sqlite3.Connection:
-    """Ouvrir une connexion a la base locale."""
+def configure_database(path):
+    """Choisir le fichier SQLite utilisé par le projet."""
+    global DB_PATH
+    DB_PATH = str(Path(path))
+
+
+def configure_retry_delay(max_delay):
+    """Fixer le délai maximal entre deux tentatives d'envoi."""
+    if max_delay < 1:
+        raise ValueError("Le délai maximal doit être supérieur à zéro.")
+
+    global MAX_RETRY_DELAY
+    MAX_RETRY_DELAY = max_delay
+
+
+def connect_database():
+    """Ouvrir une connexion vers la base SQLite locale."""
     return sqlite3.connect(DB_PATH)
 
 
-def initialize_database() -> None:
-    """Creer la file d'attente et l'historique d'audit."""
-    with closing(connect_database()) as connection:
+def initialize_database():
+    """Créer la file d'attente et l'historique s'ils n'existent pas."""
+    path = Path(DB_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    connection = connect_database()
+    try:
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(
             """
@@ -46,70 +63,87 @@ def initialize_database() -> None:
             """
         )
         connection.commit()
+    finally:
+        connection.close()
 
 
-def save_alert(event: TelemetryEvent) -> str:
-    """Donner un identifiant a l'alerte et la stocker avant le reseau."""
+def save_alert(event):
+    """Enregistrer l'événement avant tout appel réseau."""
     alert_id = str(uuid.uuid4())
     captured_at = time.time()
+
     payload = event.to_payload()
     payload["alert_id"] = alert_id
     payload["captured_at"] = captured_at
+    payload_text = json.dumps(payload)
 
-    with closing(connect_database()) as connection:
+    connection = connect_database()
+    try:
         connection.execute(
             """
             INSERT INTO pending_alerts(alert_id, payload, created_at)
             VALUES (?, ?, ?)
             """,
-            (alert_id, json.dumps(payload), captured_at),
+            (alert_id, payload_text, captured_at),
         )
         connection.commit()
+    finally:
+        connection.close()
 
-    print(f"[STOCKEE] Alerte {alert_id} enregistree dans SQLite.")
+    print(f"[STOCKEE] Alerte {alert_id} enregistrée dans SQLite.")
     return alert_id
 
 
-def get_pending_alerts(limit: int = 20) -> list[tuple[str, str, int]]:
-    """Lire les alertes dont le delai de reprise est ecoule."""
-    with closing(connect_database()) as connection:
+def get_pending_alerts(limit=20):
+    """Lire les alertes dont le délai avant le prochain essai est écoulé."""
+    connection = connect_database()
+    try:
         rows = connection.execute(
             """
-            SELECT alert_id, payload, attempts FROM pending_alerts
+            SELECT alert_id, payload, attempts
+            FROM pending_alerts
             WHERE next_attempt_at <= ?
-            ORDER BY created_at LIMIT ?
+            ORDER BY created_at
+            LIMIT ?
             """,
             (time.time(), limit),
         ).fetchall()
+    finally:
+        connection.close()
 
-    return [
-        (str(alert_id), str(payload), int(attempts))
-        for alert_id, payload, attempts in rows
-    ]
+    alerts = []
+    for alert_id, payload, attempts in rows:
+        alerts.append((str(alert_id), str(payload), int(attempts)))
+    return alerts
 
 
-def schedule_retry(alert_id: str, attempts: int) -> int:
-    """Espacer les essais : 2, 4, 8 secondes, jusqu'a 300 secondes."""
+def schedule_retry(alert_id, attempts):
+    """Programmer le prochain essai avec un délai de 2, 4, 8 secondes, etc."""
     next_attempt = attempts + 1
-    delay = min(2**next_attempt, MAX_RETRY_DELAY)
+    delay = min(2 ** next_attempt, MAX_RETRY_DELAY)
     next_attempt_at = time.time() + delay
 
-    with closing(connect_database()) as connection:
+    connection = connect_database()
+    try:
         connection.execute(
             """
-            UPDATE pending_alerts SET attempts = ?, next_attempt_at = ?
+            UPDATE pending_alerts
+            SET attempts = ?, next_attempt_at = ?
             WHERE alert_id = ?
             """,
             (next_attempt, next_attempt_at, alert_id),
         )
         connection.commit()
+    finally:
+        connection.close()
 
     return delay
 
 
-def mark_alert_synced(alert_id: str) -> bool:
-    """Archiver l'alerte avec synced=1 puis la retirer de la file active."""
-    with closing(connect_database()) as connection, connection:
+def mark_alert_synced(alert_id):
+    """Archiver une alerte confirmée, puis la retirer de la file d'attente."""
+    connection = connect_database()
+    try:
         row = connection.execute(
             """
             SELECT payload, created_at
@@ -144,29 +178,38 @@ def mark_alert_synced(alert_id: str) -> bool:
             "DELETE FROM pending_alerts WHERE alert_id = ?",
             (alert_id,),
         )
+        connection.commit()
+        return True
+    finally:
+        connection.close()
 
-    return True
 
-
-def pending_count() -> int:
-    """Compter les alertes encore en attente."""
-    with closing(connect_database()) as connection:
+def pending_count():
+    """Compter les alertes qui attendent encore une confirmation du serveur."""
+    connection = connect_database()
+    try:
         row = connection.execute("SELECT COUNT(*) FROM pending_alerts").fetchone()
-    return int(row[0])
+        return int(row[0])
+    finally:
+        connection.close()
 
 
-def synced_count() -> int:
-    """Compter les alertes envoyees conservees dans l'historique."""
-    with closing(connect_database()) as connection:
+def synced_count():
+    """Compter les alertes confirmées et conservées dans l'historique."""
+    connection = connect_database()
+    try:
         row = connection.execute(
             "SELECT COUNT(*) FROM event_history WHERE synced = 1"
         ).fetchone()
-    return int(row[0])
+        return int(row[0])
+    finally:
+        connection.close()
 
 
-def get_synced_events(limit: int = 100) -> list[dict[str, Any]]:
-    """Lire l'historique des alertes synchronisees, plus recentes d'abord."""
-    with closing(connect_database()) as connection:
+def get_synced_events(limit=100):
+    """Lire les alertes synchronisées, des plus récentes aux plus anciennes."""
+    connection = connect_database()
+    try:
         rows = connection.execute(
             """
             SELECT alert_id, event_type, payload, created_at, synced_at
@@ -177,9 +220,12 @@ def get_synced_events(limit: int = 100) -> list[dict[str, Any]]:
             """,
             (limit,),
         ).fetchall()
+    finally:
+        connection.close()
 
-    return [
-        {
+    events = []
+    for alert_id, event_type, payload, captured_at, synced_at in rows:
+        event = {
             "alert_id": str(alert_id),
             "event_type": str(event_type),
             "payload": json.loads(payload),
@@ -187,5 +233,6 @@ def get_synced_events(limit: int = 100) -> list[dict[str, Any]]:
             "synced": 1,
             "synced_at": float(synced_at),
         }
-        for alert_id, event_type, payload, captured_at, synced_at in rows
-    ]
+        events.append(event)
+
+    return events

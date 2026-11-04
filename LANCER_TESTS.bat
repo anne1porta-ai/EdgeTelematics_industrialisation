@@ -1,4 +1,8 @@
 @echo off
 cd /d "%~dp0"
-".venv\Scripts\python.exe" -m pytest -q
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" lancer.py tests
+) else (
+    python lancer.py tests
+)
 pause

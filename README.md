@@ -1,497 +1,164 @@
-> **Version actuelle :** [README_BLOC3.md](README_BLOC3.md) décrit le code simplifié.
-> **Démo résilience :** [README_RESILIENCE.md](README_RESILIENCE.md).
-> **Déploiement OTA :** [README_DEPLOIEMENT.md](README_DEPLOIEMENT.md).
-> **Historique :** le texte anglais ci-dessous documente le POC d’origine.
+# GreenMove Edge — Industrialisation du POC télématique
 
-# GreenMove Edge POC
+GreenMove traite localement les positions GPS et les accélérations d'un camion. Le projet démontre une architecture **Edge** capable de poursuivre la collecte pendant une coupure réseau, de conserver les événements dans SQLite et de les synchroniser lorsque le service distant redevient disponible.
 
-Proof of concept for GreenMove Logistics demonstrating offline ZFE geofencing and telematics-based harsh braking detection on constrained edge hardware.
+## Documentation
 
-The project contains two main modules:
+| Document | Contenu |
+|---|---|
+| [Architecture et résilience](docs/ARCHITECTURE_ET_RESILIENCE.md) | Flux de données, Store-and-Forward, backoff, circuit breaker et séparation collecte/réseau. |
+| [Démonstration](docs/DEMONSTRATION.md) | Démonstration standard, mode stress, scénario de crise et résultats attendus. |
+| [CI/CD et OTA](docs/CI_CD_ET_OTA.md) | Qualité, sécurité, build, SHA-256, signature, staging, promotion et rollback simulé. |
+| [Stratégie et cahier de tests](docs/CAHIER_ET_STRATEGIE_DE_TESTS.md) | Organisation des 55 tests et comportements vérifiés. |
+| [Historique des modifications](docs/HISTORIQUE_MODIFICATIONS.md) | Décisions de simplification, fonctionnalités conservées et résultats de validation. |
 
-- **Geo Engine**: detects whether simulated GPS positions enter the Lyon ZFE using a Bounding Box optimization followed by a Ray Casting Point-in-Polygon algorithm.
-- **Safety Engine**: analyzes longitudinal accelerometer data and detects harsh braking events using a lightweight threshold-based filter and streaming processing.
+## Architecture générale
 
-The POC is designed to run locally without any network dependency.
+```mermaid
+flowchart LR
+    A[GPS et accéléromètre] --> B[Moteurs GEO et Safety]
+    B --> C[TelemetryEvent]
+    C --> D[(SQLite\nfile d'attente)]
+    D --> E[Worker réseau]
+    E --> F[API distante]
+    E -->|échec| D
+    E --> G[(Historique synchronisé)]
 
-## Requirements
+    H[CI/CD] --> I[Paquet + SHA-256 + signature]
+    I --> J[Staging simulé]
+    J --> K[Promotion OTA manuelle]
+```
 
-- Python 3.10 or later
-- pip
-- Git
+Le fonctionnement critique reste local : la collecte et la détection ne dépendent pas du réseau. SQLite conserve les événements avant leur envoi.
 
-The project was developed and tested with:
+## Démarrage rapide
 
-- Python 3.14.4
-- pytest 9.1.1
+### Prérequis
 
-No external library is required by the application itself. `pytest` is only used for automated tests.
+- Python **3.10 ou plus récent** ;
+- `pip` ;
+- les dépendances de `requirements.txt` pour l'exécution et les tests.
 
-## Installation
+### Windows — PowerShell
 
-Clone the repository:
+```powershell
+cd "C:\chemin\vers\EdgeTelematics_industrialisation"
+py -m pip install -r requirements.txt
+
+py lancer.py demo
+py lancer.py stress
+py lancer.py resilience
+py lancer.py tests
+```
+
+### Linux ou macOS — Terminal
 
 ```bash
-git clone https://github.com/MyriamKuhn/greenmove-edge-poc.git
-cd greenmove-edge-poc
+cd /chemin/vers/EdgeTelematics_industrialisation
+python3 -m pip install -r requirements.txt
+
+python3 lancer.py demo
+python3 lancer.py stress
+python3 lancer.py resilience
+python3 lancer.py tests
 ```
 
-Create a virtual environment:
+Le fichier `lancer.py` est le point d'entrée principal. Les fichiers `.bat` restent disponibles comme raccourcis Windows.
 
-```bash
-python -m venv .venv
-```
+## Commandes disponibles
 
-Activate it on Windows with Git Bash:
+| Commande | Rôle |
+|---|---|
+| `py lancer.py demo` | Exécuter les moteurs GEO et Safety sur les données de l'exercice. |
+| `py lancer.py stress` | Traiter 1 000 mesures d'accéléromètre simulées en flux. |
+| `py lancer.py resilience` | Montrer la coupure réseau, les retries, le circuit breaker, le timeout et l'idempotence. |
+| `py lancer.py tests` | Exécuter les 55 tests automatisés. |
+| `py lancer.py build` | Construire le ZIP et son manifeste SHA-256. |
+| `py lancer.py staging` | Exécuter le paquet construit et simuler rollback puis installation réussie. |
+| `py lancer.py ota --mode rollout` | Simuler le déploiement progressif et le rollback N-1. |
 
-```bash
-source .venv/Scripts/activate
-```
+Sous Linux ou macOS, remplacer `py` par `python3`.
 
-On Windows Command Prompt:
+## Résultats attendus de la démonstration standard
 
-```cmd
-.venv\Scripts\activate
-```
-
-On macOS or Linux:
-
-```bash
-source .venv/bin/activate
-```
-
-Install the test dependency:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-## Project Structure
+### GEO
 
 ```text
-greenmove-edge-poc/
-├── data/
-│   ├── accelerometer_data.csv
-│   ├── lyon_polygon.json
-│   └── truck_gps.json
-├── scripts/
-│   └── generate_demo_data.py
-├── src/
-│   ├── geo/
-│   │   ├── __init__.py
-│   │   ├── geo_engine.py
-│   │   └── run_geo.py
-│   └── safety/
-│       ├── __init__.py
-│       ├── safety_engine.py
-│       └── run_safety.py
-├── tests/
-│   ├── geo/
-│   │   └── test_geo_engine.py
-│   └── safety/
-│       └── test_safety_engine.py
+[GPS OUT] id=1 time=08:00:00
+[GPS OUT] id=2 time=08:00:10
+[GPS OUT] id=3 time=08:00:20
+[ALERT ZFE] id=4 time=08:00:30 ...
+[GPS IN] id=5 time=08:00:40
+```
+
+Le moteur utilise la Bounding Box comme premier filtre, puis le Ray Casting pour vérifier l'appartenance au polygone. Dans cette version industrialisée, il publie uniquement l'événement d'entrée dans le polygone.
+
+### Safety
+
+```text
+[HARSH BRAKING] timestamp=1678880005 acc_y=-3.45 m/s²
+[SAFETY SUMMARY] samples=10 harsh_braking_events=1
+```
+
+Le moteur lit les mesures une par une. Il utilise un seuil de détection à `-2,5 m/s²` et un seuil de réarmement à `-2,3 m/s²` pour ne pas compter plusieurs fois un même plateau de mesures fortes.
+
+### Fichiers créés
+
+| Fichier | Contenu |
+|---|---|
+| `daily_score.json` | Bilan Safety écrit de façon atomique. |
+| `greenmove.db` | Alertes en attente et historique synchronisé. |
+| `resultats_demo/` | Fichiers de la démonstration de résilience. |
+| `dist/` | Paquet et manifeste créés par le build. |
+| `staging/` | Rapport et fichiers de la démonstration de staging. |
+
+## Par où commencer dans le code
+
+Le projet contient des mécanismes industriels, mais leur lecture peut se faire progressivement :
+
+| Ordre | Fichier | Ce qu’il montre |
+|---:|---|---|
+| 1 | `lancer.py` | Les commandes disponibles, sans entrer dans les algorithmes. |
+| 2 | `run_demo.py` | L’enchaînement : détecter, enregistrer dans SQLite, puis synchroniser. |
+| 3 | `src/geo/geo_engine.py` | La Bounding Box et le Ray Casting avec des boucles et des conditions simples. |
+| 4 | `src/safety/safety_engine.py` | La lecture en flux, le seuil de freinage et le réarmement. |
+| 5 | `src/storage/event_repository.py` | Le Store-and-Forward : écrire avant le réseau, relire, archiver. |
+| 6 | `src/sync/circuit_breaker.py` puis `sync_service.py` | Les trois états du circuit et les nouvelles tentatives d’envoi. |
+| 7 | `src/ota/` et `scripts/` | Le build, le contrôle du paquet, le rollback et le déploiement simulé. |
+
+Les fichiers de `tests/` utilisent `pytest`, des threads et des simulations de panne. Ils servent à vérifier le projet ; ils ne constituent pas le meilleur point de départ pour comprendre les traitements.
+
+Les mécanismes de résilience restent techniques, mais le code applicatif utilise désormais des fonctions, des boucles et des conditions explicites, sans `dataclass` ni annotations de types complexes.
+
+## Structure du projet
+
+```text
+EdgeTelematics_industrialisation/
+├── lancer.py
 ├── run_demo.py
-├── .gitignore
-├── requirements.txt
-└── README.md
+├── run_bloc3_demo.py
+├── src/
+│   ├── domain/       # événements métier
+│   ├── geo/          # Bounding Box et Ray Casting
+│   ├── safety/       # lecture en flux et détection des freinages
+│   ├── storage/      # SQLite Store-and-Forward
+│   ├── sync/         # worker réseau et circuit breaker
+│   └── ota/          # vérification et simulation de mise à jour
+├── scripts/          # build, staging, clés et rollout OTA
+├── tests/            # 55 tests automatisés
+├── data/             # données de démonstration
+├── docs/             # documentation détaillée
+├── .github/workflows/
+└── requirements*.txt
 ```
 
-## Run the Complete Demo
+## Périmètre fonctionnel de cette version
 
-Run the complete POC with:
+Cette mise à jour améliore la structure, le lancement, la documentation et la robustesse des fichiers **sans modifier les règles métier existantes** :
 
-```bash
-python run_demo.py
-```
+- le moteur GEO détecte l'entrée dans le polygone ZFE ;
+- le moteur Safety utilise l'hystérésis actuelle, sans anti-rebond temporel de 200 ms ;
+- le mode stress traite 1 000 mesures ;
+- SQLite, le backoff, le circuit breaker, l'idempotence et la chaîne OTA sont conservés.
 
-This executes the Geo Engine followed by the Safety Engine using the original datasets provided for the exercise.
-
-Example output:
-
-```text
-=== GREENMOVE EDGE POC ===
-
-=== GEO ENGINE ===
-[GPS OUT] id=1 time=08:00:00
-[GPS OUT] id=2 time=08:00:10
-[GPS OUT] id=3 time=08:00:20
-[ALERT ZFE] id=4 time=08:00:30 lat=45.76 lon=4.8357
-[GPS IN] id=5 time=08:00:40
-
-=== SAFETY ENGINE ===
-[HARSH BRAKING] timestamp=1678880005 acc_y=-3.45 m/s²
-[SAFETY SUMMARY] samples=10 harsh_braking_events=1
-[OUTPUT] daily_score.json
-
-=== DEMO COMPLETE ===
-```
-
-For a higher-volume Edge Computing demonstration:
-
-```bash
-python run_demo.py --stress
-```
-
-The stress mode generates and processes 1000 accelerometer samples representing 10 seconds of data at a simulated 100 Hz sampling rate.
-
-Only significant events are retained in the generated safety report.
-
-Example:
-
-```text
-Generated 1000 samples in data\demo_accelerometer_1000.csv
-[DEMO] Processing 1000 samples at simulated 100 Hz
-[HARSH BRAKING] timestamp=1678881005.49 acc_y=-3.45 m/s²
-[SAFETY SUMMARY] samples=1000 harsh_braking_events=1
-[OUTPUT] daily_score.json
-```
-
-## Run the Geo Engine
-
-From the project root:
-
-```bash
-python -m src.geo.run_geo
-```
-
-Example output:
-
-```text
-[GPS OUT] id=1 time=08:00:00
-[GPS OUT] id=2 time=08:00:10
-[GPS OUT] id=3 time=08:00:20
-[ALERT ZFE] id=4 time=08:00:30 lat=45.76 lon=4.8357
-[GPS IN] id=5 time=08:00:40
-```
-
-The Geo Engine works entirely from locally stored JSON files and does not require a network connection.
-
-## Run the Safety Engine
-
-From the project root:
-
-```bash
-python -m src.safety.run_safety
-```
-
-Example output:
-
-```text
-[HARSH BRAKING] timestamp=1678880005 acc_y=-3.45 m/s²
-[SAFETY SUMMARY] samples=10 harsh_braking_events=1
-[OUTPUT] daily_score.json
-```
-
-The command generates a `daily_score.json` file in the project root.
-
-Example:
-
-```json
-{
-  "total_samples": 10,
-  "harsh_braking_events": 1,
-  "events": [
-    {
-      "timestamp": 1678880005,
-      "acc_y": -3.45
-    }
-  ]
-}
-```
-
-## Run the Tests
-
-Run all automated tests with:
-
-```bash
-python -m pytest -v
-```
-
-The current test suite contains 20 tests covering both the Geo and Safety engines.
-
-## Input Files
-
-The POC uses three local input files stored in the `data/` directory.
-
-### `lyon_polygon.json`
-
-Defines the simplified Lyon ZFE polygon as latitude/longitude coordinates.
-
-The first and last coordinates are identical in order to explicitly close the polygon.
-
-### `truck_gps.json`
-
-Contains a simulated truck GPS trace.
-
-Each entry includes:
-
-- an identifier;
-- a timestamp;
-- latitude;
-- longitude;
-- an `expected` field supplied by the exercise dataset.
-
-The Geo Engine uses the coordinates themselves for the geometric calculation.
-
-### `accelerometer_data.csv`
-
-Contains accelerometer samples with the following columns:
-
-```text
-timestamp,acc_x,acc_y,acc_z
-```
-
-The longitudinal axis used for braking detection is `acc_y`.
-
-A strong negative Y acceleration represents vehicle deceleration.
-
-## Geo Algorithm
-
-### Bounding Box Optimization
-
-Before executing the Point-in-Polygon calculation, the Geo Engine computes the polygon bounding box:
-
-```text
-min_lat
-max_lat
-min_lon
-max_lon
-```
-
-For each GPS position, the engine first checks whether the point is inside this rectangle.
-
-If the point is outside the bounding box, it cannot be inside the ZFE polygon and is immediately rejected.
-
-This avoids running the more detailed Ray Casting calculation for obviously distant points.
-
-The Bounding Box is calculated once and reused for all GPS positions.
-
-### Ray Casting / Point in Polygon
-
-For points that pass the Bounding Box check, the engine uses the Ray Casting algorithm.
-
-Conceptually, a horizontal ray is projected from the GPS point toward one side of the plane.
-
-The algorithm counts how many polygon edges intersect this ray:
-
-- an odd number of intersections means the point is inside the polygon;
-- an even number of intersections means the point is outside the polygon.
-
-The implementation also explicitly checks whether a point lies directly on a polygon segment.
-
-Boundary points are considered inside the ZFE.
-
-The algorithm processes each polygon edge once, resulting in linear complexity relative to the number of polygon vertices:
-
-```text
-O(N)
-```
-
-This is appropriate for constrained edge hardware.
-
-### ZFE Entry Detection
-
-The Geo Engine also keeps track of the previous vehicle state.
-
-The ZFE alert is triggered only when the vehicle transitions from outside to inside the polygon:
-
-```text
-OUT -> OUT  : no alert
-OUT -> IN   : [ALERT ZFE]
-IN  -> IN   : no repeated alert
-IN  -> OUT  : vehicle leaves the zone
-```
-
-This avoids repeatedly alerting the driver while the vehicle remains inside the ZFE.
-
-## Safety Algorithm
-
-The Safety Engine focuses on the longitudinal Y axis.
-
-The exercise dataset is expressed in `m/s²`.
-
-A harsh braking event is detected when:
-
-```text
-acc_y < -2.5
-```
-
-For example:
-
-```text
--0.80 m/s²  -> normal variation
--1.20 m/s²  -> normal variation
--3.45 m/s²  -> harsh braking
-```
-
-The threshold acts as a lightweight filtering mechanism.
-
-Small variations and vehicle vibrations are ignored, while significant longitudinal deceleration is retained as an event.
-
-A moving average was intentionally not used for this POC because smoothing a very short event could reduce its amplitude and hide the braking peak.
-
-### Streaming Processing
-
-Accelerometer samples are read one at a time using Python's standard CSV library.
-
-The full dataset is not loaded into memory.
-
-The engine only keeps:
-
-- a sample counter;
-- detected harsh braking events.
-
-This reduces memory usage and is better suited to the constrained Zebra ET40 environment.
-
-At 100 samples per second:
-
-```text
-1000 samples = 10 seconds of sensor data
-```
-
-The stress demonstration shows that the engine can process all 1000 samples while retaining only the significant braking event.
-
-The processing complexity is linear:
-
-```text
-O(N)
-```
-
-## Output Files
-
-### Geo Output
-
-The Geo Engine writes its results to standard output.
-
-When the vehicle enters the ZFE, the following log format is produced:
-
-```text
-[ALERT ZFE] id=4 time=08:00:30 lat=45.76 lon=4.8357
-```
-
-A vehicle that remains inside the zone is logged without repeating the alert:
-
-```text
-[GPS IN] id=5 time=08:00:40
-```
-
-Positions outside the zone are logged as:
-
-```text
-[GPS OUT] id=1 time=08:00:00
-```
-
-### Safety Output
-
-The Safety Engine generates:
-
-```text
-daily_score.json
-```
-
-The generated file contains:
-
-- the number of processed accelerometer samples;
-- the number of detected harsh braking events;
-- the timestamp and longitudinal acceleration of each event.
-
-The output file is generated at runtime and is excluded from Git through `.gitignore`.
-
-## Error Handling
-
-The POC handles common input errors without displaying an uncontrolled traceback during normal execution.
-
-Handled cases include:
-
-- missing JSON input files;
-- invalid JSON syntax;
-- missing CSV input files;
-- invalid numeric values in accelerometer data;
-- missing or malformed required fields.
-
-Example:
-
-```text
-[ERROR] File not found: data/truck_gps.json
-```
-
-or:
-
-```text
-[ERROR] File not found: data/accelerometer_data.csv
-```
-
-This behavior is important for the live demonstration because invalid input should be reported clearly without crashing the complete application flow.
-
-## Dataset Note
-
-The GPS dataset supplied with the exercise contains the following entry:
-
-```json
-{
-  "id": 3,
-  "timestamp": "08:00:20",
-  "lat": 45.7850,
-  "lon": 4.8050,
-  "expected": "IN (Bordure)"
-}
-```
-
-Using the polygon coordinates supplied in the same dataset, this point is geometrically outside the polygon according to the implemented Ray Casting calculation.
-
-The implementation intentionally does not alter the algorithm to force the value of the `expected` field.
-
-A separate automated test verifies that a point located exactly on a polygon boundary is correctly considered inside.
-
-This keeps the geometric implementation deterministic while documenting the dataset inconsistency explicitly.
-
-## Performance Considerations
-
-The target Zebra ET40 environment has limited application memory and may receive up to 100 sensor points per second.
-
-The POC therefore follows several lightweight design principles:
-
-- no external geospatial framework;
-- no pandas or NumPy dependency;
-- Bounding Box rejection before Ray Casting;
-- linear O(N) algorithms rather than nested O(N²) processing;
-- local processing without network dependency;
-- accelerometer streaming instead of loading the full dataset into memory;
-- retention of detected events instead of the complete raw sensor history;
-- compact JSON output for the daily safety report.
-
-The stress mode demonstrates the processing of 1000 samples at a simulated 100 Hz sampling rate while retaining only the relevant harsh braking event.
-
-This illustrates the Edge Computing principle used by the project: process raw data locally and keep only useful information for later storage or transmission.
-
-## Limitations of the POC
-
-This project is intentionally limited to the technical feasibility requested by the proof of concept.
-
-Current limitations include:
-
-- the ZFE polygon is a simplified static dataset;
-- there is no production-grade European map database;
-- there is no Android sensor integration;
-- GPS data is simulated from a JSON file;
-- accelerometer data is simulated from a CSV file;
-- the harsh braking threshold is fixed;
-- the daily report does not implement an insurer-specific scoring formula;
-- detected events are still stored in memory until the daily JSON file is written;
-- there is no local database yet;
-- there is no deferred Cloud synchronization yet;
-- there is no graphical driver interface.
-
-These elements would belong to a production implementation rather than to the core feasibility POC.
-
-## Design Rationale
-
-The implementation deliberately favors simple, deterministic and explainable algorithms.
-
-The Geo module validates that ZFE detection can operate without network access, directly addressing the failure mode of the previous Cloud-dependent application.
-
-The Safety module validates that local accelerometer data can produce behavioral driving evidence by isolating significant braking events from normal variations.
-
-The streaming approach reduces memory usage while the stress demonstration confirms that high-frequency input can be processed locally without retaining all raw measurements.
-
-Both modules use lightweight local processing, making the POC suitable for demonstrating the Edge Computing approach on constrained hardware.
+Les évolutions fonctionnelles éventuelles doivent être traitées séparément afin de ne pas les confondre avec un refactoring de lisibilité.

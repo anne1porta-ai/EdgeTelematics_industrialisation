@@ -12,3 +12,7 @@ resultats_demo/
 *.sqlite3
 .env
 ota_private.pem
+reports/
+daily_score.json
+ota_state.json
+ota_status.json

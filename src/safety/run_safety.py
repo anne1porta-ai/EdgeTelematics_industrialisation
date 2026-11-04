@@ -1,6 +1,7 @@
-"""Lire les mesures du projet, signaler les freinages et ecrire le bilan."""
+"""Lire les mesures, signaler les freinages et écrire le bilan Safety."""
 
 import csv
+from pathlib import Path
 
 from src.safety.safety_engine import (
     analyze_accelerometer_stream,
@@ -8,20 +9,20 @@ from src.safety.safety_engine import (
     write_daily_score,
 )
 
-INPUT_FILE = "data/accelerometer_data.csv"
-OUTPUT_FILE = "daily_score.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+INPUT_FILE = PROJECT_ROOT / "data" / "accelerometer_data.csv"
+OUTPUT_FILE = PROJECT_ROOT / "daily_score.json"
 
 
 def run_safety_engine(
     input_file=INPUT_FILE,
     output_file=OUTPUT_FILE,
-    *,
     on_event=None,
     raise_on_error=False,
     samples=None,
     verbose=True,
 ):
-    """Traiter les mesures en flux et appeler on_event pour chaque freinage."""
+    """Traiter les mesures en flux, écrire le bilan et le retourner."""
     try:
         if samples is None:
             samples = iter_accelerometer_data(input_file)
@@ -29,7 +30,7 @@ def run_safety_engine(
         score = analyze_accelerometer_stream(samples, on_event=on_event)
 
         if verbose:
-            print("\n[BILAN SAFETY] Collecte terminee.")
+            print("\n[BILAN SAFETY] Collecte terminée.")
             for event in score["events"]:
                 print(
                     f"[HARSH BRAKING] timestamp={event['timestamp']} "
@@ -37,6 +38,7 @@ def run_safety_engine(
                 )
 
         write_daily_score(score, output_file)
+
         if verbose:
             print(
                 f"[SAFETY SUMMARY] samples={score['total_samples']} "
@@ -44,10 +46,13 @@ def run_safety_engine(
             )
             print(f"[OUTPUT] {output_file}")
 
+        return score
+
     except (FileNotFoundError, csv.Error, KeyError, TypeError, ValueError) as error:
         if raise_on_error:
             raise
         print(f"[ERROR] {error}")
+        return None
 
 
 if __name__ == "__main__":

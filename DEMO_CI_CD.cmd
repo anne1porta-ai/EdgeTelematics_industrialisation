@@ -29,13 +29,13 @@ if not exist "%PY%" (
 REM -----------------------------------------------------------------
 echo [1/6] QUALITE - Ruff
 echo -----------------------------------------------------------------
-"%PY%" -m ruff check src scripts tests run_demo.py run_bloc3_demo.py
+"%PY%" -m ruff check src scripts tests lancer.py run_demo.py run_bloc3_demo.py
 if errorlevel 1 goto :failed
 echo [OK] Ruff
 echo.
 
 echo [1/6] QUALITE - mypy
-"%PY%" -m mypy --explicit-package-bases --check-untyped-defs src scripts run_demo.py run_bloc3_demo.py
+"%PY%" -m mypy --explicit-package-bases --check-untyped-defs src scripts lancer.py run_demo.py run_bloc3_demo.py
 if errorlevel 1 goto :failed
 echo [OK] mypy
 echo.
@@ -57,7 +57,7 @@ echo.
 echo [3/6] SECURITE
 echo -----------------------------------------------------------------
 echo Bandit...
-"%PY%" -m bandit -r src scripts -x tests,scripts/tests
+"%PY%" -m bandit -r src scripts lancer.py run_demo.py run_bloc3_demo.py -x tests,scripts/tests
 if errorlevel 1 goto :failed
 echo [OK] Bandit
 echo.

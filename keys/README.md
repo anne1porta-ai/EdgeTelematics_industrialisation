@@ -1,18 +1,27 @@
-# OTA signing key
+# Clé de signature OTA de démonstration
 
-Run from PowerShell at the repository root:
+Le projet fournit un script Python pour créer une paire de clés de démonstration.
+Depuis la racine du dépôt :
+
+**Windows :**
 
 ```powershell
-.\scripts\generate_demo_signing_keys.ps1
+py scripts/generate_demo_signing_keys.py
 ```
 
-This creates:
+**Linux ou macOS :**
 
-- `ota_private.pem` — private demo signing key. **Never commit it.**
-- `keys/ota_public.pem` — public verification key. Commit this file.
+```bash
+python3 scripts/generate_demo_signing_keys.py
+```
 
-Then create a GitHub Actions secret named:
+Le script crée :
 
-`OTA_SIGNING_PRIVATE_KEY`
+- `ota_private.pem` : clé privée de démonstration, à ne jamais envoyer dans Git ;
+- `keys/ota_public.pem` : clé publique utilisée par la CI pour vérifier la signature.
 
-and paste the complete contents of `ota_private.pem`.
+Dans GitHub, créer ensuite le secret `OTA_SIGNING_PRIVATE_KEY` et y copier le
+contenu complet de `ota_private.pem`.
+
+Ces clés servent à la démonstration de la chaîne CI/CD. Elles ne constituent pas
+une gestion de clés de production.

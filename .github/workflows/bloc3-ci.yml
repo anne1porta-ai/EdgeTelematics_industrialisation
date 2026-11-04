@@ -45,7 +45,7 @@ jobs:
           python -m mypy
           --explicit-package-bases
           --check-untyped-defs
-          src scripts run_demo.py run_bloc3_demo.py
+          src scripts lancer.py run_demo.py run_bloc3_demo.py
 
   tests:
     name: Tests - pytest et rapport JUnit
@@ -104,7 +104,7 @@ jobs:
       - name: Analyser le code applicatif avec Bandit
         run: >
           python -m bandit
-          -r src scripts run_demo.py run_bloc3_demo.py
+          -r src scripts lancer.py run_demo.py run_bloc3_demo.py
           -x tests,scripts/tests
           -f json
           -o reports/bandit.json

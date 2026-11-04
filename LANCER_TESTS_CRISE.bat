@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul
+cd /d "%~dp0"
 cls
 echo ================================================================
 echo     GREENMOVE - TESTS DE RESILIENCE ET CIRCUIT BREAKER

@@ -29,31 +29,31 @@ RED = "\033[91m"
 CYAN = "\033[96m"
 MAGENTA = "\033[95m"
 
-RECEIVED_IDS: set[str] = set()
+RECEIVED_IDS = set()
 
 
-def colored(text: str, color: str) -> str:
+def colored(text, color):
     return f"{color}{text}{RESET}"
 
 
-def pause(message: str = "Appuyez sur ENTREE pour continuer...") -> None:
+def pause(message="Appuyez sur ENTREE pour continuer..."):
     try:
         input(colored(f"\n▶ {message}", CYAN))
     except EOFError:
         pass
 
 
-def section(number: int, title: str, color: str = CYAN) -> None:
+def section(number, title, color=CYAN):
     print("\n" + colored("=" * WIDTH, color))
     print(colored(f"  {number}. {title}", BOLD + color))
     print(colored("=" * WIDTH, color))
 
 
-def line(label: str, value: object) -> None:
+def line(label, value):
     print(f"{label:<34}: {value}")
 
 
-def demonstrate_streaming() -> None:
+def demonstrate_streaming():
     """Prouver que les mesures sont traitees sans historique en memoire."""
     section(1, "🧠 TRAITEMENT EN FLUX", CYAN)
 
@@ -68,11 +68,7 @@ def demonstrate_streaming() -> None:
     line("Resultat", colored("✅ AUCUNE ACCUMULATION", GREEN))
 
 
-def sensor_samples(
-    network_available: threading.Event,
-    stop_event: threading.Event,
-    breaker: CircuitBreaker,
-):
+def sensor_samples(network_available, stop_event, breaker):
     """Lire 160 mesures a 10 Hz pendant la panne puis la reprise."""
     readings = iter_accelerometer_data(INPUT_FILE)
 
@@ -98,11 +94,10 @@ def sensor_samples(
         yield sample
 
         if number in (20, 60, 100, 140):
-            state = (
-                colored("✅ OK", GREEN)
-                if network_available.is_set()
-                else colored("⚠️  COUPEE", RED)
-            )
+            if network_available.is_set():
+                state = colored("✅ OK", GREEN)
+            else:
+                state = colored("⚠️  COUPEE", RED)
             print(
                 f"{colored('📈 COLLECTE', CYAN)} {number:3d} mesures | "
                 f"4G {state} | Circuit {breaker.state} | "
@@ -112,18 +107,18 @@ def sensor_samples(
         stop_event.wait(0.1)
 
 
-def demonstrate_network_outage(folder: Path) -> CircuitBreaker:
+def demonstrate_network_outage(folder):
     """Montrer Store-and-Forward, backoff et circuit breaker."""
     section(2, "⚠️  PANNE 4G + STORE-AND-FORWARD", RED)
-    database.DB_PATH = str(folder / "events.sqlite")
-    database.MAX_RETRY_DELAY = 300
+    database.configure_database(folder / "events.sqlite")
+    database.configure_retry_delay(300)
     database.initialize_database()
 
     network_available = threading.Event()
     stop_event = threading.Event()
     breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=5.0)
 
-    def demo_sender(alert_id: str, _payload: str) -> None:
+    def demo_sender(alert_id, _payload):
         if not network_available.is_set():
             raise requests.ConnectionError("4G coupee")
         print(f"[RECU] Alerte {alert_id} recue par le serveur simule.")
@@ -163,10 +158,10 @@ def demonstrate_network_outage(folder: Path) -> CircuitBreaker:
 class DemoApiHandler(BaseHTTPRequestHandler):
     """Mini API locale : une route lente et une route idempotente."""
 
-    def log_message(self, *_args) -> None:
+    def log_message(self, *_args):
         return
 
-    def do_POST(self) -> None:
+    def do_POST(self):
         if self.path == "/slow":
             time.sleep(2)
             try:
@@ -200,14 +195,14 @@ class DemoApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
-def start_demo_api() -> ThreadingHTTPServer:
+def start_demo_api():
     server = ThreadingHTTPServer(("127.0.0.1", 0), DemoApiHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
 
 
-def demonstrate_http_timeout(base_url: str) -> None:
+def demonstrate_http_timeout(base_url):
     section(4, "⏱️  TIMEOUT HTTP REEL", YELLOW)
     print("Le serveur local attend volontairement 2 s.")
     print("Le client abandonne apres 1 s.")
@@ -223,7 +218,7 @@ def demonstrate_http_timeout(base_url: str) -> None:
         line("Resultat", colored("❌ timeout non declenche", RED))
 
 
-def demonstrate_idempotency(base_url: str) -> None:
+def demonstrate_idempotency(base_url):
     section(5, "🔁 IDEMPOTENCE COTE SERVEUR", CYAN)
     RECEIVED_IDS.clear()
     alert_id = "demo-alert-001"
@@ -243,7 +238,7 @@ def demonstrate_idempotency(base_url: str) -> None:
     line("Resultat", colored("✅ AUCUN DOUBLON", GREEN))
 
 
-def demonstrate_http() -> None:
+def demonstrate_http():
     """Montrer le timeout puis la deduplication avec un serveur local."""
     server = start_demo_api()
     base_url = f"http://127.0.0.1:{server.server_port}"
@@ -256,7 +251,7 @@ def demonstrate_http() -> None:
         server.server_close()
 
 
-def show_final_report(breaker: CircuitBreaker) -> None:
+def show_final_report(breaker):
     section(6, "📊 TELEMETRIE FINALE", MAGENTA)
     line("Version demo", "POC-resilience")
     line("Historique de mesures en RAM", colored("0", GREEN))
@@ -274,14 +269,18 @@ def show_final_report(breaker: CircuitBreaker) -> None:
     line("Alerte conservee hors ligne", colored("✅ OUI", GREEN))
     line("Aucune alerte perdue", colored("✅ OUI", GREEN))
     line("Backoff observe", colored("✅ 2 s → 4 s → 8 s", GREEN))
-    line(
-        "Circuit ouvert apres 3 echecs",
-        colored("✅ OUI" if breaker.has_opened else "❌ NON", GREEN),
-    )
-    line(
-        "Circuit referme apres reprise",
-        colored("✅ OUI" if breaker.state == CLOSED else "❌ NON", GREEN),
-    )
+    if breaker.has_opened:
+        opened_result = "✅ OUI"
+    else:
+        opened_result = "❌ NON"
+
+    if breaker.state == CLOSED:
+        closed_result = "✅ OUI"
+    else:
+        closed_result = "❌ NON"
+
+    line("Circuit ouvert apres 3 echecs", colored(opened_result, GREEN))
+    line("Circuit referme apres reprise", colored(closed_result, GREEN))
     line("Timeout HTTP", colored("✅ DEMONTRE", GREEN))
     line("Idempotence", colored("✅ DEMONTREE", GREEN))
     line("Archivage apres succes", colored("✅ OUI", GREEN))
@@ -296,7 +295,7 @@ def show_final_report(breaker: CircuitBreaker) -> None:
     print(colored("-" * WIDTH, CYAN))
 
 
-def demonstrate(folder: Path) -> None:
+def demonstrate(folder):
     print("\n" + colored("#" * WIDTH, MAGENTA))
     print(
         colored(
@@ -318,9 +317,13 @@ def demonstrate(folder: Path) -> None:
     show_final_report(breaker)
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=Path("resultats_demo"))
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=Path(__file__).resolve().parent / "resultats_demo",
+    )
     args = parser.parse_args()
     args.data_dir.mkdir(parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(prefix="essai-", dir=args.data_dir))

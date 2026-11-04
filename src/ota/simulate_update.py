@@ -1,6 +1,6 @@
 """Simuler une mise à jour et un rollback avec des fichiers JSON locaux.
 
-Cette simulation n'installe aucun logiciel Android et ne contacte pas de backend.
+Cette simulation n'installe aucun logiciel Android et ne contacte aucun serveur.
 """
 
 import argparse
@@ -14,61 +14,71 @@ STATUS_PATH = Path("ota_status.json")
 DEFAULT_VERSION = "2.2.0"
 
 
-def read_current_version() -> str:
-    """Lire la version simulée, ou la version initiale si aucun état n'existe."""
+def read_current_version():
+    """Lire la version simulée ou retourner la version initiale."""
     if not STATE_PATH.exists():
         return DEFAULT_VERSION
-    return json.loads(STATE_PATH.read_text(encoding="utf-8"))["current_version"]
+
+    content = STATE_PATH.read_text(encoding="utf-8")
+    state = json.loads(content)
+    return state["current_version"]
 
 
-def write_current_version(version: str) -> None:
+def write_current_version(version):
     """Écrire la version simulée dans le répertoire choisi."""
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(
-        json.dumps({"current_version": version}, indent=2) + "\n", encoding="utf-8"
-    )
+    content = json.dumps({"current_version": version}, indent=2) + "\n"
+    STATE_PATH.write_text(content, encoding="utf-8")
 
 
-def write_status(status: dict) -> None:
+def write_status(status):
     """Conserver le résultat de la simulation dans un fichier local."""
     STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATUS_PATH.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+    content = json.dumps(status, indent=2) + "\n"
+    STATUS_PATH.write_text(content, encoding="utf-8")
 
 
-def simulate_update(
-    version: str | None = None,
-    fail_install: bool = False,
-    manifest_path: str | Path | None = None,
-) -> dict:
-    """Vérifier le paquet avant toute écriture, puis simuler son installation."""
+def simulate_update(version=None, fail_install=False, manifest_path=None):
+    """Vérifier le paquet, puis simuler son installation ou son rollback."""
     metadata = {}
+
     if manifest_path is not None:
         manifest = verify_package(manifest_path)
         version = manifest["version"]
-        metadata = {"commit": manifest["commit"], "checksum": manifest["checksum"]}
+        metadata = {
+            "commit": manifest["commit"],
+            "checksum": manifest["checksum"],
+        }
+
     if version is None:
         raise ValueError("Indiquer une version ou un manifeste.")
 
-    previous = read_current_version()
+    previous_version = read_current_version()
     print(f"[OTA SIMULATION] Tentative locale version={version}")
 
     if fail_install:
-        write_current_version(previous)
+        write_current_version(previous_version)
         status = {
             "status": "rolled_back",
             "attempted_version": version,
-            "current_version": previous,
-            "previous_version": previous,
+            "current_version": previous_version,
+            "previous_version": previous_version,
         }
-        print(f"[OTA SIMULATION] Installation échouée ; version conservée={previous}")
+        print(
+            "[OTA SIMULATION] Installation échouée ; "
+            f"version conservée={previous_version}"
+        )
     else:
         write_current_version(version)
         status = {
             "status": "success",
-            "previous_version": previous,
+            "previous_version": previous_version,
             "current_version": version,
         }
-        print(f"[OTA SIMULATION] Installation réussie : {previous} -> {version}")
+        print(
+            "[OTA SIMULATION] Installation réussie : "
+            f"{previous_version} -> {version}"
+        )
 
     status.update(metadata)
     write_status(status)
@@ -76,8 +86,8 @@ def simulate_update(
     return status
 
 
-def main() -> None:
-    """Exécuter la simulation et bloquer la chaîne en cas d'échec."""
+def main():
+    """Lire les options puis exécuter la simulation."""
     global STATE_PATH, STATUS_PATH
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -90,6 +100,7 @@ def main() -> None:
 
     STATE_PATH = args.state_dir / "ota_state.json"
     STATUS_PATH = args.state_dir / "ota_status.json"
+
     try:
         status = simulate_update(
             args.version,
@@ -98,6 +109,7 @@ def main() -> None:
         )
     except (OSError, ValueError, KeyError) as error:
         raise SystemExit(f"[OTA SIMULATION] Échec : {error}") from error
+
     if status["status"] == "rolled_back":
         raise SystemExit(1)
 

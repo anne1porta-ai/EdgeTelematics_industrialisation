@@ -1,38 +1,35 @@
-"""Modeles metier simples des evenements produits sur la tablette."""
-
-from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any
+"""Définir les événements métier créés sur la tablette."""
 
 
-@dataclass(frozen=True)
 class TelemetryEvent:
-    """Evenement metier independant de SQLite et du reseau."""
+    """Représenter un événement avant son stockage ou son envoi réseau."""
 
-    event_type: str
-    payload: dict[str, Any]
-
-    @classmethod
-    def harsh_braking(cls, acc_y: float, timestamp: float) -> "TelemetryEvent":
-        """Creer un evenement de freinage brusque."""
-        return cls(
-            event_type="harsh_braking",
-            payload={"timestamp": timestamp, "acc_y": acc_y},
-        )
+    def __init__(self, event_type, payload):
+        self.event_type = event_type
+        self.payload = dict(payload)
 
     @classmethod
-    def zfe_entry(cls, point: Mapping[str, Any]) -> "TelemetryEvent":
-        """Creer un evenement d'entree dans une ZFE."""
-        return cls(
-            event_type="zfe_entry",
-            payload={
-                "id": point["id"],
-                "timestamp": point["timestamp"],
-                "lat": point["lat"],
-                "lon": point["lon"],
-            },
-        )
+    def harsh_braking(cls, acc_y, timestamp):
+        """Créer un événement de freinage brusque."""
+        payload = {
+            "timestamp": timestamp,
+            "acc_y": acc_y,
+        }
+        return cls("harsh_braking", payload)
 
-    def to_payload(self) -> dict[str, Any]:
-        """Retourner le JSON commun a SQLite et au reseau."""
-        return {"event_type": self.event_type, **self.payload}
+    @classmethod
+    def zfe_entry(cls, point):
+        """Créer un événement d'entrée dans la ZFE."""
+        payload = {
+            "id": point["id"],
+            "timestamp": point["timestamp"],
+            "lat": point["lat"],
+            "lon": point["lon"],
+        }
+        return cls("zfe_entry", payload)
+
+    def to_payload(self):
+        """Préparer le dictionnaire commun au stockage et à l'envoi réseau."""
+        result = {"event_type": self.event_type}
+        result.update(self.payload)
+        return result
