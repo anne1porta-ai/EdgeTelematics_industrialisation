@@ -1,5 +1,40 @@
 # CI/CD et OTA
 
+## Schéma de l’enchaînement
+
+![Workflows GitHub Actions, jobs, artefacts, promotion manuelle par source_run_id, OTA et rollback](../assets/deploiement_ci_cd_ota.svg)
+
+### Jobs réellement présents
+
+| Workflow | Job | Déclenchement ou dépendance | Résultat principal |
+|---|---|---|---|
+| `bloc3-ci.yml` | `quality` | Push, pull request ou lancement manuel | Contrôles Ruff et mypy |
+| `bloc3-ci.yml` | `tests` | En parallèle de `quality` et `security` | Tests pytest et rapport JUnit |
+| `bloc3-ci.yml` | `security` | En parallèle de `quality` et `tests` | Rapports Bandit, pip-audit et Gitleaks |
+| `bloc3-ci.yml` | `build` | Après réussite des trois jobs précédents | `greenmove-build-signed` : ZIP, manifeste, SHA-256 et signature |
+| `bloc3-ci.yml` | `staging` | Après `build` | `greenmove-staging-report` et `greenmove-validated-package` |
+| `promote-demo.yml` | `promote` | Lancement manuel avec `source_run_id` | Promotion du même paquet validé, puis rollout simulé |
+
+### Comment les lancer
+
+**Depuis le poste :**
+
+```powershell
+py lancer.py tests
+py lancer.py build --version demo-local
+py lancer.py staging
+py lancer.py ota --mode rollout
+```
+
+**Depuis GitHub Actions :**
+
+1. Un push sur `main`, une pull request ou un lancement manuel déclenche **Bloc 3 CI**.
+2. Après un run vert, copier l’identifiant numérique présent dans l’URL `/actions/runs/<ID>`.
+3. Ouvrir **Promotion OTA - Demo**, cliquer sur **Run workflow** et saisir cet identifiant dans `source_run_id`.
+4. Le job `promote` vérifie le run source, télécharge `greenmove-validated-package`, contrôle le SHA-256 et la signature, puis lance la simulation du rollout.
+
+> **Signature et chiffrement :** la signature est cryptographique, mais le paquet n’est pas chiffré par cette chaîne. La clé privée est protégée dans GitHub Secrets ; la clé publique du dépôt vérifie que le paquet provient bien de la chaîne autorisée et qu’il n’a pas été modifié.
+
 ## Chaîne GitHub Actions
 
 Le workflow `.github/workflows/bloc3-ci.yml` suit cet ordre :

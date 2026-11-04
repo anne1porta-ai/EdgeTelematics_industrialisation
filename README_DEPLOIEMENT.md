@@ -6,6 +6,20 @@ Construire une version une seule fois, vérifier son intégrité, la tester en s
 
 Cette règle évite qu'une version différente de celle testée arrive en déploiement.
 
+## Vue d’ensemble
+
+![Chaîne réelle de déploiement : jobs CI, artefacts signés, promotion par run ID, OTA et rollback](assets/deploiement_ci_cd_ota.svg)
+
+Le schéma reprend les noms réellement utilisés dans le projet :
+
+- le workflow **`bloc3-ci.yml`** lance les jobs `quality`, `tests` et `security` en parallèle ;
+- le job `build` démarre uniquement si ces trois contrôles réussissent ;
+- le job `staging` reteste exactement le paquet signé produit par `build` ;
+- le workflow **`promote-demo.yml`** est lancé manuellement avec `source_run_id`, l’identifiant du run CI vert à promouvoir ;
+- la promotion télécharge `greenmove-validated-package` sans reconstruire le paquet, puis revérifie son SHA-256 et sa signature.
+
+> **Sécurité :** le paquet est signé, pas chiffré par ce workflow. La clé privée est protégée dans GitHub Secrets sous le nom `OTA_SIGNING_PRIVATE_KEY`. La clé publique `keys/ota_public.pem` sert à vérifier la signature.
+
 ## Chaîne automatisée
 
 ```text
